@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: diarias-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: diarias
+      POSTGRES_PASSWORD: diarias
+      POSTGRES_DB: diarias
+      # Brazilian locale/collation for correct pt-BR ordering of names.
+      LANG: pt_BR.utf8
+    ports:
+      - "5433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diarias -d diarias"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    container_name: diarias-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DIARIAS_DATABASE_URL: postgres://diarias:diarias@db:5432/diarias?sslmode=disable
+      DIARIAS_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    profiles:
+      - full
+
+volumes:
+  db-data:

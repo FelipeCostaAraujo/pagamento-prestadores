@@ -1,0 +1,22 @@
+# Go
+/backend/bin/
+/backend/api
+
+# Flutter / Dart
+/app/.dart_tool/
+/app/build/
+/app/.flutter-plugins
+/app/.flutter-plugins-dependencies
+/app/ios/Pods/
+/app/ios/.symlinks/
+/app/android/.gradle/
+/app/android/local.properties
+/app/macos/Pods/
+*.iml
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store

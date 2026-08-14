@@ -1,0 +1,37 @@
+name: diarias
+description: "Controle e fechamento de diárias de prestadoras."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.5.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  fonts:
+    # Display face — Sora, shipped as a variable font covering 400..800.
+    - family: Sora
+      fonts:
+        - asset: assets/fonts/Sora-Variable.ttf
+    # Text/UI face — Atkinson Hyperlegible, designed by the Braille Institute
+    # for maximum letter distinction. Bundled rather than loaded from the
+    # Google Fonts CDN so the app renders correctly offline.
+    - family: AtkinsonHyperlegible
+      fonts:
+        - asset: assets/fonts/AtkinsonHyperlegible-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/AtkinsonHyperlegible-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/AtkinsonHyperlegible-Italic.ttf
+          style: italic
