@@ -69,10 +69,7 @@ class _MonthCard extends StatelessWidget {
     }
 
     return DsCard(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 14,
-        vertical: DsSpace.s4,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: DsSpace.s4),
       child: Column(
         children: [
           _MonthNav(state: state),
@@ -292,10 +289,7 @@ class _Legend extends StatelessWidget {
         runSpacing: DsSpace.s2,
         children: [
           for (final provider in state.providers)
-            _LegendChip(
-              provider: provider,
-              count: counts[provider.id] ?? 0,
-            ),
+            _LegendChip(provider: provider, count: counts[provider.id] ?? 0),
         ],
       ),
     );
@@ -356,7 +350,10 @@ class _RecentList extends StatelessWidget {
 
     if (recent.isEmpty) {
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: DsSpace.s2),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 2,
+          vertical: DsSpace.s2,
+        ),
         child: Text(
           state.providers.isEmpty
               ? 'Cadastre uma prestadora para começar a marcar os dias.'
@@ -398,7 +395,10 @@ class _RecentRow extends StatelessWidget {
       child: DsCard(
         elevated: false,
         radius: DsRadius.md,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: DsSpace.s3),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: DsSpace.s3,
+        ),
         child: Row(
           children: [
             DsDot(color: color, size: 10),
@@ -419,7 +419,11 @@ class _RecentRow extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     recentDateLabel(entry.date),
-                    style: DsText.body(size: 12, height: 1.3, color: DsColors.textMuted),
+                    style: DsText.body(
+                      size: 12,
+                      height: 1.3,
+                      color: DsColors.textMuted,
+                    ),
                   ),
                 ],
               ),

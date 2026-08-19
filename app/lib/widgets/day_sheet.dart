@@ -43,9 +43,7 @@ class _DaySheet extends StatelessWidget {
         return Container(
           decoration: BoxDecoration(
             color: DsColors.surfaceCard,
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(26),
-            ),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
             boxShadow: DsShadows.xl,
           ),
           padding: EdgeInsets.fromLTRB(
@@ -157,9 +155,7 @@ class _ProviderRow extends StatelessWidget {
             child: InkWell(
               onTap: () => state.toggleEntry(provider.id, date),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  minHeight: DsSize.touchMin,
-                ),
+                constraints: const BoxConstraints(minHeight: DsSize.touchMin),
                 child: Row(
                   children: [
                     Container(

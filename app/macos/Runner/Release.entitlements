@@ -8,5 +8,10 @@
 	     just under `flutter run`. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Keychain access for the stored session token. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)br.com.felipearaujo.diarias</string>
+	</array>
 </dict>
 </plist>

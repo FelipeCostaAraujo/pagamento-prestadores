@@ -1,3 +1,9 @@
+# Production shape: what runs on the VM.
+#
+# For local development add the override, which republishes Postgres on the
+# host so `go run ./cmd/api` can reach it:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+
 services:
   db:
     image: postgres:16-alpine
@@ -5,12 +11,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: diarias
-      POSTGRES_PASSWORD: diarias
+      # Required — compose refuses to start if it is unset, so the VM can never
+      # come up with the old hardcoded password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
       POSTGRES_DB: diarias
       # Brazilian locale/collation for correct pt-BR ordering of names.
       LANG: pt_BR.utf8
-    ports:
-      - "5433:5432"
+    # No host port mapping: reachable only from other containers on the
+    # compose network (e.g. the api service), never from the host itself.
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
@@ -28,12 +36,30 @@ services:
       db:
         condition: service_healthy
     environment:
-      DIARIAS_DATABASE_URL: postgres://diarias:diarias@db:5432/diarias?sslmode=disable
-      DIARIAS_ADDR: ":8080"
+      DIARIAS_DATABASE_URL: postgres://diarias:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@db:5432/diarias?sslmode=disable
+      DIARIAS_ADDR: ":8081"
+      # The reverse proxy terminates TLS and forwards here, so the real client
+      # address arrives in X-Forwarded-For. Login throttling needs it to tell
+      # callers apart — without this every request looks like it came from the
+      # proxy. Only safe because nothing but the proxy can reach this port.
+      DIARIAS_TRUST_PROXY: "true"
+      # Native apps ignore CORS. Set this to the site's origin if a browser
+      # build is ever served from one.
+      DIARIAS_CORS_ORIGINS: ${DIARIAS_CORS_ORIGINS:-*}
+      # Never seed the demo prestadoras into production.
+      DIARIAS_SEED: "false"
     ports:
-      - "8080:8080"
-    profiles:
-      - full
+      # Bound to loopback on purpose: the reverse proxy reaches it over
+      # localhost, and nothing from the internet can hit the API directly and
+      # bypass TLS. Publishing "7000:8081" instead would expose plain HTTP —
+      # and with it, passwords — on the VM's public address.
+      - "127.0.0.1:7000:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   db-data:

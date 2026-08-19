@@ -121,9 +121,7 @@ class _ClosingCard extends StatelessWidget {
             Wrap(
               spacing: 6,
               runSpacing: 6,
-              children: [
-                for (final day in closing.days) _DayChip(day: day),
-              ],
+              children: [for (final day in closing.days) _DayChip(day: day)],
             ),
           ],
           const SizedBox(height: DsSpace.s4),
@@ -131,7 +129,9 @@ class _ClosingCard extends StatelessWidget {
             children: [
               Expanded(
                 child: DsButton(
-                  label: closing.paid ? 'Desfazer pagamento' : 'Marcar como pago',
+                  label: closing.paid
+                      ? 'Desfazer pagamento'
+                      : 'Marcar como pago',
                   variant: closing.paid
                       ? DsButtonVariant.ghost
                       : DsButtonVariant.primary,

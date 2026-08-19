@@ -13,11 +13,13 @@ import (
 type Config struct {
 	DatabaseURL string
 	Addr        string
-	// APIToken, when non-empty, is required as `Authorization: Bearer <token>`
-	// on every /api request.
-	APIToken    string
 	CORSOrigins []string
 	Seed        bool
+	// TrustProxy makes the server believe X-Forwarded-For / X-Real-IP when
+	// identifying the client. Enable it only when a reverse proxy sits in
+	// front: otherwise any caller can forge the header and dodge login
+	// throttling.
+	TrustProxy bool
 }
 
 // Load reads configuration from the environment. If a readable file exists at
@@ -33,8 +35,8 @@ func Load(envFiles ...string) (Config, error) {
 	cfg := Config{
 		DatabaseURL: env("DIARIAS_DATABASE_URL", ""),
 		Addr:        env("DIARIAS_ADDR", ":8080"),
-		APIToken:    env("DIARIAS_API_TOKEN", ""),
 		Seed:        env("DIARIAS_SEED", "false") == "true",
+		TrustProxy:  env("DIARIAS_TRUST_PROXY", "false") == "true",
 	}
 
 	for _, o := range strings.Split(env("DIARIAS_CORS_ORIGINS", "*"), ",") {

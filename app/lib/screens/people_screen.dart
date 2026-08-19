@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../format.dart';
 import '../models/models.dart';
+import '../main.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
@@ -43,6 +44,68 @@ class PeopleScreen extends StatelessWidget {
           padding: EdgeInsets.fromLTRB(DsSpace.s1, DsSpace.s4, DsSpace.s1, 0),
           child: _FooterNote(),
         ),
+        const SizedBox(height: DsSpace.s6),
+        const _AccountSection(),
+      ],
+    );
+  }
+}
+
+/// Who is signed in, and the way out.
+///
+/// The design has no settings screen, so this lives at the bottom of the
+/// Cadastro tab — the one place already about configuration rather than data.
+class _AccountSection extends StatelessWidget {
+  const _AccountSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = AuthScope.maybeOf(context);
+    if (auth == null) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: DsSpace.s1),
+          child: Text('CONTA', style: DsText.caps()),
+        ),
+        const SizedBox(height: DsSpace.s3),
+        DsCard(
+          padding: const EdgeInsets.symmetric(
+            horizontal: DsSpace.s4,
+            vertical: 14,
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.person_outline,
+                size: 22,
+                color: DsColors.textMuted,
+              ),
+              const SizedBox(width: DsSpace.s3),
+              Expanded(
+                child: Text(
+                  auth.user?.username ?? '—',
+                  style: DsText.body(
+                    size: 15,
+                    weight: DsWeight.bold,
+                    height: 1.2,
+                    color: DsColors.textStrong,
+                  ),
+                ),
+              ),
+              ListenableBuilder(
+                listenable: auth,
+                builder: (context, _) => DsButton(
+                  label: auth.busy ? 'Saindo…' : 'Sair',
+                  variant: DsButtonVariant.secondary,
+                  onPressed: auth.busy ? null : auth.logout,
+                ),
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -78,10 +141,7 @@ class _ProviderCard extends StatelessWidget {
     final palette = DsPalette.at(provider.colorIndex);
 
     return DsCard(
-      padding: const EdgeInsets.symmetric(
-        horizontal: DsSpace.s4,
-        vertical: 14,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: DsSpace.s4, vertical: 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

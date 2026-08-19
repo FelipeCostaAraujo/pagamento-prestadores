@@ -34,9 +34,8 @@ const weekdayNames = <String>[
 /// Single-letter column headers, Sunday first — the design's `['D','S','T','Q','Q','S','S']`.
 const weekdayInitials = <String>['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
-String capitalize(String value) => value.isEmpty
-    ? value
-    : value[0].toUpperCase() + value.substring(1);
+String capitalize(String value) =>
+    value.isEmpty ? value : value[0].toUpperCase() + value.substring(1);
 
 String monthName(int month) => monthNames[month - 1];
 

@@ -111,7 +111,11 @@ abstract final class AppTheme {
   }
 
   static TextTheme get _textTheme => TextTheme(
-    displayLarge: DsText.display(size: 48, weight: DsWeight.extra, height: 1.12),
+    displayLarge: DsText.display(
+      size: 48,
+      weight: DsWeight.extra,
+      height: 1.12,
+    ),
     headlineLarge: DsText.h1,
     headlineMedium: DsText.h2,
     headlineSmall: DsText.h3,

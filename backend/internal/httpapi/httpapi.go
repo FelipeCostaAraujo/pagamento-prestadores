@@ -16,34 +16,61 @@ import (
 )
 
 type Server struct {
-	store *store.Store
-	cfg   config.Config
+	store  *store.Store
+	cfg    config.Config
+	logins *loginLimiter
 }
 
 // NewHandler builds the fully-wrapped HTTP handler for the API.
 func NewHandler(st *store.Store, cfg config.Config) http.Handler {
-	s := &Server{store: st, cfg: cfg}
+	s := &Server{
+		store:  st,
+		cfg:    cfg,
+		logins: newLoginLimiter(maxLoginFailures, loginWindow),
+	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health", s.health)
+	// Public: no session required. Deliberately only these two — there is no
+	// signup endpoint, accounts are created on the server with `api user add`.
+	public := http.NewServeMux()
+	public.HandleFunc("GET /api/v1/health", s.health)
+	public.HandleFunc("POST /api/v1/auth/login", s.login)
 
-	mux.HandleFunc("GET /api/v1/providers", s.listProviders)
-	mux.HandleFunc("POST /api/v1/providers", s.createProvider)
-	mux.HandleFunc("PATCH /api/v1/providers/{id}", s.updateProvider)
-	mux.HandleFunc("DELETE /api/v1/providers/{id}", s.deleteProvider)
+	// Everything else needs a valid session.
+	private := http.NewServeMux()
+	private.HandleFunc("POST /api/v1/auth/logout", s.logout)
+	private.HandleFunc("GET /api/v1/auth/me", s.me)
+	private.HandleFunc("POST /api/v1/auth/password", s.changePassword)
 
-	mux.HandleFunc("GET /api/v1/entries", s.listEntries)
-	mux.HandleFunc("PUT /api/v1/entries", s.upsertEntry)
-	mux.HandleFunc("DELETE /api/v1/entries", s.deleteEntry)
+	private.HandleFunc("GET /api/v1/providers", s.listProviders)
+	private.HandleFunc("POST /api/v1/providers", s.createProvider)
+	private.HandleFunc("PATCH /api/v1/providers/{id}", s.updateProvider)
+	private.HandleFunc("DELETE /api/v1/providers/{id}", s.deleteProvider)
 
-	mux.HandleFunc("GET /api/v1/months/{year}/{month}", s.monthClosing)
-	mux.HandleFunc("PUT /api/v1/months/{year}/{month}/providers/{providerID}/payment", s.markPaid)
-	mux.HandleFunc("DELETE /api/v1/months/{year}/{month}/providers/{providerID}/payment", s.unmarkPaid)
+	private.HandleFunc("GET /api/v1/entries", s.listEntries)
+	private.HandleFunc("PUT /api/v1/entries", s.upsertEntry)
+	private.HandleFunc("DELETE /api/v1/entries", s.deleteEntry)
 
-	// Outermost first: log everything, normalise the path, answer CORS
-	// preflight before auth can reject it, then require the token.
-	return logging(trimTrailingSlash(
-		cors(cfg.CORSOrigins, requireToken(cfg.APIToken, mux))))
+	private.HandleFunc("GET /api/v1/months/{year}/{month}", s.monthClosing)
+	private.HandleFunc("PUT /api/v1/months/{year}/{month}/providers/{providerID}/payment", s.markPaid)
+	private.HandleFunc("DELETE /api/v1/months/{year}/{month}/providers/{providerID}/payment", s.unmarkPaid)
+
+	// Route to the public mux first; anything it does not recognise falls
+	// through to the authenticated one. Written this way so adding a data
+	// endpoint cannot accidentally leave it unauthenticated — new routes go on
+	// `private` and are protected by construction.
+	root := http.NewServeMux()
+	root.Handle("/", s.requireSession(private))
+	for _, pattern := range []string{
+		"GET /api/v1/health",
+		"POST /api/v1/auth/login",
+	} {
+		root.Handle(pattern, public)
+	}
+
+	// Outermost first: log everything, normalise the path, then answer CORS
+	// preflight before auth can reject it (a browser preflight carries no
+	// Authorization header).
+	return logging(trimTrailingSlash(cors(cfg.CORSOrigins, root)))
 }
 
 // ---------------------------------------------------------------- providers --

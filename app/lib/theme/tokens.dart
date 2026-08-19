@@ -135,8 +135,7 @@ abstract final class DsPalette {
 
   /// Wraps out-of-range indexes so an unexpected value from the API can never
   /// crash the calendar.
-  static ProviderColor at(int index) =>
-      entries[index.abs() % entries.length];
+  static ProviderColor at(int index) => entries[index.abs() % entries.length];
 }
 
 @immutable

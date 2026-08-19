@@ -11,7 +11,9 @@ import 'ds_widgets.dart';
 /// Builds the WhatsApp message for a prestadora's month, exactly as the design
 /// previews it.
 String closingMessage(ProviderClosing closing, int month) {
-  final diarias = closing.entryCount == 1 ? '1 diária' : '${closing.entryCount} diárias';
+  final diarias = closing.entryCount == 1
+      ? '1 diária'
+      : '${closing.entryCount} diárias';
   return 'Oi, ${closing.provider.firstName}! '
       'Fechamento de ${monthName(month)}:\n'
       '$diarias · total ${formatMoney(closing.totalCents)}.\n'

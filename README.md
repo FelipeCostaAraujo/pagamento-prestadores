@@ -25,31 +25,31 @@ Built from the Claude Design project **"App de controle de prestadoras"**
 └── docker-compose.yml    Postgres (+ optional API container)
 ```
 
-## Running it
+## Running it locally
 
-**1. Postgres**
+Copy `.env.example` to `.env` first — `POSTGRES_PASSWORD` is required and
+compose refuses to start without it.
+
+**1. Postgres** — the dev override republishes it on `127.0.0.1:5433` so the API
+can be run from source. The production file publishes no host port at all.
 
 ```bash
-docker compose up -d db
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
 ```
-
-Published on host port **5433** so it doesn't collide with a local Postgres on
-5432.
 
 **2. API** — migrations run automatically on boot.
 
 ```bash
-cd backend && DIARIAS_DATABASE_URL='postgres://diarias:diarias@localhost:5433/diarias?sslmode=disable' go run ./cmd/api
+cd backend && go run ./cmd/api
 ```
 
-Copy `.env.example` to `.env` to avoid passing variables each time.
+**3. An account** — there is no signup endpoint; accounts are created here.
 
-`DIARIAS_SEED=true` inserts the design's two demo prestadoras (Marina, Cleide),
-but **only when the providers table is empty**. It ships off, so a fresh volume
-never resurrects the demo names over real data. Turn it on only to repopulate a
-throwaway database.
+```bash
+cd backend && go run ./cmd/api user add felipe
+```
 
-**3. App**
+**4. App**
 
 ```bash
 cd app && flutter run
@@ -61,8 +61,6 @@ Android emulator). Point it elsewhere with:
 ```bash
 flutter run --dart-define=DIARIAS_API_URL=http://192.168.0.10:8080
 ```
-
-To run the API in a container too: `docker compose --profile full up -d`.
 
 ### Running on this Mac and on a phone on the same LAN
 
@@ -104,9 +102,72 @@ or the phone won't reach the API.
 | --- | --- | --- |
 | `DIARIAS_DATABASE_URL` | — (required) | Postgres connection string |
 | `DIARIAS_ADDR` | `:8080` | HTTP listen address |
-| `DIARIAS_API_TOKEN` | empty | When set, every `/api` request needs `Authorization: Bearer <token>` |
+| `DIARIAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For`. **Only** behind a reverse proxy — otherwise callers forge it and evade login throttling |
 | `DIARIAS_CORS_ORIGINS` | `*` | Comma-separated allowed origins (needed for Flutter Web) |
-| `DIARIAS_SEED` | `false` | Seed two prestadoras into an empty database |
+| `DIARIAS_SEED` | `false` | Seed two demo prestadoras into an empty database |
+| `POSTGRES_PASSWORD` | — (required by compose) | Database password |
+
+## Authentication
+
+Username and password. Data is **shared**: every account sees the same
+prestadoras and diárias — this is one household's calendar, and the login exists
+to keep the published API closed, not to separate tenants.
+
+- **Passwords** are argon2id (19 MiB, t=2, p=1 — OWASP's recommended profile),
+  salted per user, stored in PHC format. The parameters live inside each hash, so
+  they can be raised later without invalidating existing ones.
+- **Sessions** are opaque 256-bit tokens, valid 30 days. The database stores only
+  their SHA-256, so a dump of `sessions` hands over nothing usable.
+- **No signup endpoint.** Accounts exist only via `api user add` on the server.
+- **Login throttling**: 8 failures per 15 minutes, counted per username *and* per
+  client address. A lockout blocks the correct password too — that is the point,
+  but it means a legitimate user waits out the window.
+- Unknown usernames spend the same CPU as real ones (a dummy hash is verified),
+  so response timing does not reveal which accounts exist. Measured: 32 ms vs
+  33 ms.
+- Changing a password or disabling an account **revokes every open session**
+  immediately.
+
+### Managing accounts
+
+The admin commands live in the API binary, so the deployed image needs nothing
+extra:
+
+```bash
+docker compose exec api /api user add felipe
+```
+
+`user list`, `user passwd <nome>`, `user disable <nome>` and `user enable <nome>`
+round it out. The password is read from stdin — never from an argument, where it
+would land in shell history and `ps`. In a terminal it is prompted without echo;
+piped, it is read as one line:
+
+```bash
+docker compose exec -T api /api user add marilia <<< 'uma-senha-bem-longa'
+```
+
+## Deploying on the VM
+
+The API listens on `:8081` in the container, and compose publishes it on
+**`127.0.0.1:7000`** — loopback only, on purpose. The reverse proxy reaches it
+over localhost, and nothing on the internet can hit plain HTTP directly and
+bypass TLS. Point the proxy at `http://127.0.0.1:7000`.
+
+```bash
+docker compose up -d          # db + api
+docker compose exec api /api user add felipe
+```
+
+Postgres publishes no host port at all; only the api container can reach it.
+
+**TLS is not optional here.** The login sends a password in the request body: over
+plain HTTP anyone on the path reads it. Terminate TLS at the proxy and let only
+HTTPS reach the outside.
+
+`DIARIAS_TRUST_PROXY=true` is set in compose so login throttling sees the real
+client address instead of the proxy's. That is safe *only* because the API port
+is bound to loopback — if it were ever published publicly, a caller could forge
+`X-Forwarded-For` and evade the per-IP limit.
 
 ## Data model
 
@@ -130,9 +191,17 @@ binary floats out of the wire format.
 
 Base path `/api/v1`. All dates are `YYYY-MM-DD`.
 
+Only `/health` and `/auth/login` are public. **Everything else needs**
+`Authorization: Bearer <token>` — new routes are registered on the authenticated
+mux, so an endpoint cannot be added unprotected by accident.
+
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/health` | |
+| `GET` | `/health` | Public |
+| `POST` | `/auth/login` | Public. `{username, password}` → `{token, expires_at, user}` |
+| `POST` | `/auth/logout` | Revokes the calling token |
+| `GET` | `/auth/me` | Confirms a stored token is still valid |
+| `POST` | `/auth/password` | `{current_password, new_password}` — revokes every session |
 | `GET` | `/providers` | Active prestadoras, in display order |
 | `POST` | `/providers` | `{name?, default_rate_cents?, color_index?}` — colour auto-assigned |
 | `PATCH` | `/providers/{id}` | Omitted fields are left unchanged |
@@ -144,8 +213,9 @@ Base path `/api/v1`. All dates are `YYYY-MM-DD`.
 | `PUT` | `/months/{year}/{month}/providers/{id}/payment` | Mark paid; returns the refreshed month |
 | `DELETE` | `/months/{year}/{month}/providers/{id}/payment` | Reopen; returns the refreshed month |
 
-Errors are `{"code": "...", "message": "..."}` with `400` for validation, `404`
-for missing rows, `401` when a token is configured and absent, `500` otherwise.
+Errors are `{"code": "...", "message": "..."}` with `400` for validation, `401`
+for a missing/invalid session or wrong credentials, `404` for missing rows, `429`
+for too many login attempts (with `Retry-After`), `500` otherwise.
 
 `total_cents` is everything worked in the month; **`outstanding_cents`** excludes
 prestadoras already paid and is what the header shows as "A pagar".
@@ -189,20 +259,24 @@ cd app && flutter test
 ```
 
 Go covers the date/period logic (half-open month bounds, December rolling into
-January, leap February). Flutter covers pt-BR money parsing/formatting
-round-trips, the wire models, and widget tests that drive the real shell against
-a mocked API — the three tabs, the day sheet, month navigation refetching, and
-the offline retry state. Widget tests run at the design's 402x874 frame so what
-sits below the fold matches the real device.
+January, leap February), argon2id hashing (salting, tampered hashes, a hostile
+`m=` parameter), and login throttling. Flutter covers pt-BR money
+parsing/formatting round-trips, the wire models, the full auth flow (restore,
+wrong password, mid-session 401, offline logout), and widget tests that drive the
+real shell against a mocked API — the three tabs, the day sheet, month navigation
+refetching, and the offline retry state. Widget tests run at the design's 402x874
+frame so what sits below the fold matches the real device.
 
 ## Not built
 
-From the design's own "Próximos passos", plus what a real deployment needs:
+From the design's own "Próximos passos", plus what a deployment would still want:
 
 - Meia diária and faltas
 - Reminder on the last day of the month
 - History of past months (the data is all there; there is no screen for it)
-- **Authentication.** The design has no login, so the API has none: it assumes a
-  single household. `DIARIAS_API_TOKEN` is a shared-secret stopgap, not
-  multi-user auth — anyone with the token sees all data. Multi-user would need an
-  owner column on `providers` and a real identity layer.
+- **Password change from inside the app.** The endpoint exists
+  (`POST /auth/password`); there is no screen for it, so use `api user passwd`.
+- **Multi-tenancy.** Accounts share one dataset by design. Separating households
+  would need an owner column on `providers` and a filter on every query.
+- **Session list / "log out my other devices".** Sessions are revocable
+  wholesale (`user passwd`, `user disable`) but not individually from the app.

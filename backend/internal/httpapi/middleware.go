@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -9,29 +8,9 @@ import (
 	"time"
 )
 
-// requireToken enforces a bearer token when one is configured. An empty token
-// disables the check, which is the local-development default.
-func requireToken(token string, next http.Handler) http.Handler {
-	if token == "" {
-		return next
-	}
-	expected := "Bearer " + token
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := r.Header.Get("Authorization")
-		// Constant-time compare so the token can't be recovered by timing.
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="diarias"`)
-			writeJSON(w, http.StatusUnauthorized,
-				errorBody{"unauthorized", "valid bearer token required"})
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // cors answers preflight requests and echoes an allowed origin. It sits
-// outside requireToken so a browser preflight — which carries no Authorization
-// header — is never rejected as unauthorized.
+// outside the session check so a browser preflight — which carries no
+// Authorization header — is never rejected as unauthorized.
 func cors(origins []string, next http.Handler) http.Handler {
 	allowAny := slices.Contains(origins, "*")
 

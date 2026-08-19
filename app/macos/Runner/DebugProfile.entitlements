@@ -14,5 +14,12 @@
 	<!-- Required by the Flutter tool for hot reload / the observatory. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- The session token is kept in the Keychain (flutter_secure_storage).
+	     A sandboxed macOS app needs this to reach it; without it the token
+	     simply is not persisted and the app asks for the password each launch. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)br.com.felipearaujo.diarias</string>
+	</array>
 </dict>
 </plist>

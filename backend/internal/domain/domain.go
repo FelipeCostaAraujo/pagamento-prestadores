@@ -62,6 +62,23 @@ func (d *Date) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// User is an account that may sign in. There is no role or permission field:
+// every user has the same access to the same shared household data.
+type User struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	// Non-nil when the account is blocked.
+	DisabledAt *time.Time `json:"disabled_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// Session is a successful login. Token is populated only when the session is
+// created — it is never read back out of storage.
+type Session struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // Provider is a prestadora: a person who works day rates.
 type Provider struct {
 	ID               string    `json:"id"`

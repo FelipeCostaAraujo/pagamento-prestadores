@@ -19,6 +19,19 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// The session is gone — expired, revoked, or the password was changed. The app
+/// reacts by returning to the login screen rather than showing an error.
+class ApiUnauthorized extends ApiException {
+  ApiUnauthorized(super.message) : super(statusCode: 401);
+}
+
+/// Too many failed logins. [retryAfter] is the server's Retry-After, when sent.
+class ApiTooManyAttempts extends ApiException {
+  ApiTooManyAttempts(super.message, {this.retryAfter}) : super(statusCode: 429);
+
+  final Duration? retryAfter;
+}
+
 /// HTTP client for the Go backend.
 class ApiClient {
   ApiClient({Uri? baseUrl, http.Client? httpClient, this.token})
@@ -28,9 +41,15 @@ class ApiClient {
   final Uri baseUrl;
   final http.Client _http;
 
-  /// Sent as `Authorization: Bearer <token>` when set, matching the backend's
-  /// optional `DIARIAS_API_TOKEN`.
-  final String? token;
+  /// Session token, sent as `Authorization: Bearer <token>`. Set on login,
+  /// cleared on logout or when the server rejects it.
+  String? token;
+
+  bool get hasToken => token?.isNotEmpty ?? false;
+
+  /// Invoked when any call is rejected with 401, so the app can drop the stored
+  /// token and return to the login screen from wherever it was.
+  void Function()? onUnauthorized;
 
   static const _timeout = Duration(seconds: 15);
 
@@ -43,8 +62,7 @@ class ApiClient {
     const configured = String.fromEnvironment('DIARIAS_API_URL');
     if (configured.isNotEmpty) return Uri.parse(configured);
 
-    final host =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+    final host = !kIsWeb && defaultTargetPlatform == TargetPlatform.android
         ? '10.0.2.2'
         : 'localhost';
     return Uri.parse('http://$host:8080');
@@ -56,6 +74,57 @@ class ApiClient {
   };
 
   void dispose() => _http.close();
+
+  // ------------------------------------------------------------------ auth --
+
+  /// Exchanges credentials for a session token. On success the token is stored
+  /// on this client, so subsequent calls are authenticated.
+  Future<AuthSession> login({
+    required String username,
+    required String password,
+  }) async {
+    final body = await _send(
+      'POST',
+      '/api/v1/auth/login',
+      body: {'username': username, 'password': password},
+      // A 401 here means "wrong password", not "session expired" — it must not
+      // trigger the global logout handler.
+      isLogin: true,
+    );
+    final session = AuthSession.fromJson(body as Map<String, dynamic>);
+    token = session.token;
+    return session;
+  }
+
+  /// Confirms a stored token is still valid and returns its owner.
+  Future<AuthUser> me() async {
+    final body = await _send('GET', '/api/v1/auth/me');
+    return AuthUser.fromJson(body as Map<String, dynamic>);
+  }
+
+  /// Ends the session server-side. The local token is cleared either way: if
+  /// the server cannot be reached, the user still expects to be logged out.
+  Future<void> logout() async {
+    try {
+      await _send('POST', '/api/v1/auth/logout');
+    } finally {
+      token = null;
+    }
+  }
+
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    await _send(
+      'POST',
+      '/api/v1/auth/password',
+      body: {'current_password': currentPassword, 'new_password': newPassword},
+      isLogin: true,
+    );
+    // The server drops every session on a password change, including this one.
+    token = null;
+  }
 
   // ------------------------------------------------------------- providers --
 
@@ -187,6 +256,9 @@ class ApiClient {
     String path, {
     Map<String, String>? query,
     Map<String, dynamic>? body,
+    // Set on the credential endpoints, where a 401 means "wrong password"
+    // rather than "your session died" and must not log the app out.
+    bool isLogin = false,
   }) async {
     final uri = baseUrl.replace(
       path: path,
@@ -221,10 +293,7 @@ class ApiClient {
 
     if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
       if (response.statusCode >= 400) {
-        throw ApiException(
-          'A API respondeu ${response.statusCode}.',
-          statusCode: response.statusCode,
-        );
+        throw _errorFor(response, null, isLogin);
       }
       return null;
     }
@@ -246,11 +315,70 @@ class ApiClient {
       final message = decoded is Map<String, dynamic>
           ? decoded['message'] as String?
           : null;
-      throw ApiException(
-        message ?? 'A API respondeu ${response.statusCode}.',
-        statusCode: response.statusCode,
-      );
+      throw _errorFor(response, message, isLogin);
     }
     return decoded;
   }
+
+  /// Maps a failed response onto the right exception type.
+  ApiException _errorFor(
+    http.Response response,
+    String? message,
+    bool isLogin,
+  ) {
+    final fallback = 'A API respondeu ${response.statusCode}.';
+
+    switch (response.statusCode) {
+      case 401:
+        if (!isLogin) {
+          // The stored token is no longer good; drop it and let the app show
+          // the login screen instead of an error the user cannot act on.
+          token = null;
+          onUnauthorized?.call();
+        }
+        return ApiUnauthorized(message ?? 'Sessão expirada.');
+      case 429:
+        final seconds = int.tryParse(response.headers['retry-after'] ?? '');
+        return ApiTooManyAttempts(
+          message ?? 'Tentativas demais. Aguarde um pouco.',
+          retryAfter: seconds == null ? null : Duration(seconds: seconds),
+        );
+      default:
+        return ApiException(
+          message ?? fallback,
+          statusCode: response.statusCode,
+        );
+    }
+  }
+}
+
+/// The successful result of a login.
+@immutable
+class AuthSession {
+  const AuthSession({
+    required this.token,
+    required this.expiresAt,
+    required this.user,
+  });
+
+  final String token;
+  final DateTime expiresAt;
+  final AuthUser user;
+
+  factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
+    token: json['token'] as String,
+    expiresAt: DateTime.parse(json['expires_at'] as String),
+    user: AuthUser.fromJson(json['user'] as Map<String, dynamic>),
+  );
+}
+
+@immutable
+class AuthUser {
+  const AuthUser({required this.id, required this.username});
+
+  final String id;
+  final String username;
+
+  factory AuthUser.fromJson(Map<String, dynamic> json) =>
+      AuthUser(id: json['id'] as String, username: json['username'] as String);
 }

@@ -6,7 +6,11 @@ plugins {
 
 android {
     namespace = "br.com.felipearaujo.diarias"
-    compileSdk = flutter.compileSdkVersion
+    // Pinned rather than flutter.compileSdkVersion (36): flutter_secure_storage
+    // 11.x publishes AAR metadata requiring API 37, and the build fails the
+    // checkDebugAarMetadata task without it. Drop back to
+    // flutter.compileSdkVersion once Flutter's default reaches 37.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -98,6 +98,24 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Drops everything loaded for the previous session.
+  ///
+  /// Called on sign-out so the next account cannot briefly see the last one's
+  /// prestadoras and totals while its own load is in flight.
+  void reset() {
+    _providers = const [];
+    _closing = MonthClosing.empty(_year, _month);
+    _entriesByDay = const {};
+    _initialLoadDone = false;
+    _loading = false;
+    _error = null;
+    _toast = null;
+    _tab = AppTab.calendar;
+    _year = _today.year;
+    _month = _today.month;
+    notifyListeners();
+  }
+
   static Map<String, List<WorkEntry>> _groupByDay(List<WorkEntry> entries) {
     final map = <String, List<WorkEntry>>{};
     for (final entry in entries) {
@@ -219,11 +237,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// Overrides the value of a single day without touching the default rate.
-  Future<void> setEntryValue(
-    String providerId,
-    DateTime date,
-    int valueCents,
-  ) {
+  Future<void> setEntryValue(String providerId, DateTime date, int valueCents) {
     return _mutate(
       () => api.upsertEntry(
         providerId: providerId,
@@ -261,11 +275,7 @@ class AppState extends ChangeNotifier {
   Future<void> setPaid(String providerId, bool paid, {String? toast}) {
     return _mutate(() async {
       if (paid) {
-        await api.markPaid(
-          year: _year,
-          month: _month,
-          providerId: providerId,
-        );
+        await api.markPaid(year: _year, month: _month, providerId: providerId);
       } else {
         await api.unmarkPaid(
           year: _year,

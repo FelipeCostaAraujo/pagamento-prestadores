@@ -1,0 +1,20 @@
+# Local development overrides. Never used on the VM.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+#
+# Then run the API from source against it:
+#
+#   cd backend && go run ./cmd/api
+
+services:
+  db:
+    # Republishes Postgres on the host so `go run ./cmd/api` (outside Docker)
+    # can connect. Port 5433 avoids colliding with a local Postgres on 5432.
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  api:
+    # The container API is not wanted while developing against `go run`; this
+    # keeps `up` from starting it unless it is asked for by name.
+    profiles:
+      - container
