@@ -70,6 +70,28 @@ class AppState extends ChangeNotifier {
   String? _toast;
   String? get toast => _toast;
 
+  /// Actions currently in flight, by key.
+  ///
+  /// Two jobs: it drives the per-button spinners, and it makes a second tap on
+  /// an action that is already running a no-op. Without that guard a slow
+  /// network turns an impatient double-tap on "+ Nova prestadora" into two
+  /// prestadoras.
+  final Set<String> _pending = <String>{};
+
+  bool isPending(String key) => _pending.contains(key);
+
+  /// True while any write is in flight.
+  bool get isSaving => _pending.isNotEmpty;
+
+  static const addProviderKey = 'provider:add';
+
+  static String entryKey(String providerId, DateTime date) =>
+      'entry:$providerId:${dateKey(date)}';
+
+  static String payKey(String providerId) => 'pay:$providerId';
+
+  static String providerKey(String id) => 'provider:$id';
+
   // ---------------------------------------------------------------- loading --
 
   Future<void> load() async {
@@ -124,20 +146,62 @@ class AppState extends ChangeNotifier {
     return map;
   }
 
-  /// Runs [action], surfacing any API error as a toast and refreshing on
-  /// success. Mutations are few and cheap, so a full reload is simpler — and
-  /// less prone to drift — than patching local state.
+  /// Refreshes only what a day change can affect: the month's entries and its
+  /// closing. The prestadora list is untouched by marking a day, so re-fetching
+  /// it would just add latency to the hot path.
+  Future<void> _refreshMonth() async {
+    final results = await Future.wait([
+      api.monthClosing(year: _year, month: _month),
+      api.listEntries(year: _year, month: _month),
+    ]);
+    _closing = results[0] as MonthClosing;
+    _entriesByDay = _groupByDay(results[1] as List<WorkEntry>);
+  }
+
+  /// Runs [action] under the key [key], which must be unique per logical
+  /// action.
+  ///
+  /// A repeat call while the same key is in flight is dropped — that is the
+  /// double-tap guard. [rollback] undoes an optimistic local change when the
+  /// server rejects it.
   Future<void> _mutate(
+    String key,
     Future<void> Function() action, {
     String? successToast,
+    Future<void> Function()? refresh,
+    VoidCallback? rollback,
   }) async {
+    if (!_pending.add(key)) return;
+    notifyListeners();
+
     try {
       await action();
-      await load();
+      await (refresh ?? load)();
       if (successToast != null) showToast(successToast);
     } on ApiException catch (e) {
+      rollback?.call();
       showToast(e.message);
+    } finally {
+      _pending.remove(key);
+      notifyListeners();
     }
+  }
+
+  /// Replaces (or clears, when [entry] is null) a prestadora's entry on one
+  /// day, building a new map so a snapshot taken beforehand stays valid as a
+  /// rollback.
+  void _setEntryLocally(String providerId, DateTime date, WorkEntry? entry) {
+    final key = dateKey(date);
+    final next = Map<String, List<WorkEntry>>.from(_entriesByDay);
+    final list = [...?next[key]]
+      ..removeWhere((e) => e.providerId == providerId);
+    if (entry != null) list.add(entry);
+    if (list.isEmpty) {
+      next.remove(key);
+    } else {
+      next[key] = list;
+    }
+    _entriesByDay = next;
   }
 
   // -------------------------------------------------------------- navigation --
@@ -225,35 +289,90 @@ class AppState extends ChangeNotifier {
 
   /// Marks or unmarks [date] for a prestadora. Marking adopts her current
   /// default rate; the value can then be changed for that day alone.
+  ///
+  /// The change is applied locally first so the checkbox answers the tap rather
+  /// than the round trip — over the internet that is the difference between
+  /// instant and about a second. The server call then confirms it, and a
+  /// failure rolls the local change back.
   Future<void> toggleEntry(String providerId, DateTime date) {
+    final key = entryKey(providerId, date);
+    if (isPending(key)) return Future.value();
+
     final existing = entryFor(providerId, date);
-    return _mutate(() async {
-      if (existing != null) {
-        await api.deleteEntry(providerId: providerId, date: date);
-      } else {
-        await api.upsertEntry(providerId: providerId, date: date);
-      }
-    });
+    final snapshot = _entriesByDay;
+
+    _setEntryLocally(
+      providerId,
+      date,
+      existing != null
+          ? null
+          : WorkEntry(
+              // Replaced by the server's row on the refresh that follows.
+              id: 'pendente:$providerId:${dateKey(date)}',
+              providerId: providerId,
+              date: dayOnly(date),
+              valueCents: providerById(providerId)?.defaultRateCents ?? 0,
+            ),
+    );
+    notifyListeners();
+
+    return _mutate(
+      key,
+      () async {
+        if (existing != null) {
+          await api.deleteEntry(providerId: providerId, date: date);
+        } else {
+          await api.upsertEntry(providerId: providerId, date: date);
+        }
+      },
+      refresh: _refreshMonth,
+      rollback: () => _entriesByDay = snapshot,
+    );
   }
 
   /// Overrides the value of a single day without touching the default rate.
   Future<void> setEntryValue(String providerId, DateTime date, int valueCents) {
+    final key = entryKey(providerId, date);
+    if (isPending(key)) return Future.value();
+
+    final existing = entryFor(providerId, date);
+    final snapshot = _entriesByDay;
+
+    if (existing != null) {
+      _setEntryLocally(
+        providerId,
+        date,
+        WorkEntry(
+          id: existing.id,
+          providerId: providerId,
+          date: existing.date,
+          valueCents: valueCents,
+        ),
+      );
+      notifyListeners();
+    }
+
     return _mutate(
+      key,
       () => api.upsertEntry(
         providerId: providerId,
         date: date,
         valueCents: valueCents,
       ),
+      refresh: _refreshMonth,
+      rollback: () => _entriesByDay = snapshot,
     );
   }
 
-  Future<void> addProvider() =>
-      _mutate(() => api.createProvider(defaultRateCents: 17000));
+  Future<void> addProvider() => _mutate(
+    addProviderKey,
+    () => api.createProvider(defaultRateCents: 17000),
+  );
 
   Future<void> renameProvider(String id, String name) {
     final current = providerById(id);
     if (current != null && current.name == name) return Future.value();
-    return _mutate(() => api.updateProvider(id, name: name));
+    return _mutate(providerKey(id), () => api.updateProvider(id, name: name));
   }
 
   Future<void> setProviderRate(String id, int rateCents) {
@@ -261,29 +380,42 @@ class AppState extends ChangeNotifier {
     if (current != null && current.defaultRateCents == rateCents) {
       return Future.value();
     }
-    return _mutate(() => api.updateProvider(id, defaultRateCents: rateCents));
+    return _mutate(
+      providerKey(id),
+      () => api.updateProvider(id, defaultRateCents: rateCents),
+    );
   }
 
   Future<void> deleteProvider(String id) {
     final name = providerById(id)?.firstName ?? 'Prestadora';
     return _mutate(
+      providerKey(id),
       () => api.deleteProvider(id),
       successToast: '$name foi removida',
     );
   }
 
   Future<void> setPaid(String providerId, bool paid, {String? toast}) {
-    return _mutate(() async {
-      if (paid) {
-        await api.markPaid(year: _year, month: _month, providerId: providerId);
-      } else {
-        await api.unmarkPaid(
-          year: _year,
-          month: _month,
-          providerId: providerId,
-        );
-      }
-    }, successToast: toast);
+    return _mutate(
+      payKey(providerId),
+      () async {
+        if (paid) {
+          await api.markPaid(
+            year: _year,
+            month: _month,
+            providerId: providerId,
+          );
+        } else {
+          await api.unmarkPaid(
+            year: _year,
+            month: _month,
+            providerId: providerId,
+          );
+        }
+      },
+      successToast: toast,
+      refresh: _refreshMonth,
+    );
   }
 
   // ------------------------------------------------------------------ toasts --

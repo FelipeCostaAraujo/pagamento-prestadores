@@ -53,19 +53,24 @@ class ApiClient {
 
   static const _timeout = Duration(seconds: 15);
 
-  /// Where the API lives by default.
+  /// The deployed API. HTTPS is not negotiable here: the login sends a password
+  /// in the request body, over the public internet.
+  static const productionUrl = 'https://colaboradores.fca.dev.br';
+
+  /// Where the API lives by default: production.
   ///
-  /// Overridable at build time with `--dart-define=DIARIAS_API_URL=...`.
-  /// The Android emulator reaches the host machine through 10.0.2.2 rather than
-  /// localhost, so it gets its own default.
+  /// Override at build time with one of the checked-in configs rather than
+  /// editing this file:
+  ///
+  ///   flutter run --dart-define-from-file=config/local.json   # API na VM, pela LAN
+  ///   flutter run --dart-define-from-file=config/prod.json    # explicitamente produção
+  ///
+  /// Because production is the default, a plain `flutter run` writes to real
+  /// data — use config/local.json while developing.
   static Uri defaultBaseUrl() {
     const configured = String.fromEnvironment('DIARIAS_API_URL');
     if (configured.isNotEmpty) return Uri.parse(configured);
-
-    final host = !kIsWeb && defaultTargetPlatform == TargetPlatform.android
-        ? '10.0.2.2'
-        : 'localhost';
-    return Uri.parse('http://$host:8080');
+    return Uri.parse(productionUrl);
   }
 
   Map<String, String> get _headers => {

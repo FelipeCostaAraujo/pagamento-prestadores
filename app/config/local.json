@@ -1,0 +1,4 @@
+{
+  "_comment": "API na VM, acessada pela LAN. Use enquanto desenvolve, para não escrever no banco de produção: flutter run --dart-define-from-file=config/local.json",
+  "DIARIAS_API_URL": "http://192.168.10.180:7000"
+}

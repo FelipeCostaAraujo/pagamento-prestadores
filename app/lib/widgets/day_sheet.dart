@@ -136,6 +136,9 @@ class _ProviderRow extends StatelessWidget {
     final entry = state.entryFor(provider.id, date);
     final worked = entry != null;
     final palette = DsPalette.at(provider.colorIndex);
+    // The row is already showing the optimistic result; this only marks that
+    // the server has not confirmed it yet, and blocks a second tap in between.
+    final saving = state.isPending(AppState.entryKey(provider.id, date));
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: DsSpace.s3),
@@ -153,7 +156,7 @@ class _ProviderRow extends StatelessWidget {
             checked: worked,
             label: provider.displayName,
             child: InkWell(
-              onTap: () => state.toggleEntry(provider.id, date),
+              onTap: saving ? null : () => state.toggleEntry(provider.id, date),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: DsSize.touchMin),
                 child: Row(
@@ -170,7 +173,16 @@ class _ProviderRow extends StatelessWidget {
                         ),
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: worked
+                      child: saving
+                          ? SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: worked ? Colors.white : palette.dot,
+                              ),
+                            )
+                          : worked
                           ? const Icon(
                               Icons.check,
                               size: 16,

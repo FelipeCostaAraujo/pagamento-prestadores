@@ -1,0 +1,6 @@
+# Copie para android/key.properties (gitignored) depois de gerar o keystore.
+# storeFile aceita caminho absoluto ou relativo à pasta android/.
+storePassword=a-senha-que-voce-escolheu
+keyPassword=a-senha-que-voce-escolheu
+keyAlias=diarias
+storeFile=/Users/felipearaujo/chaves/diarias-release.jks

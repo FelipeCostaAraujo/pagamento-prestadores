@@ -1,0 +1,4 @@
+{
+  "_comment": "Produção — já é o padrão do app. Este arquivo existe para tornar a escolha explícita em builds de release e em CI.",
+  "DIARIAS_API_URL": "https://colaboradores.fca.dev.br"
+}

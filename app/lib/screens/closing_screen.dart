@@ -60,6 +60,7 @@ class _ClosingCard extends StatelessWidget {
     final palette = DsPalette.at(provider.colorIndex);
     // Nothing worked means nothing to pay — the API rejects it too.
     final canPay = closing.entryCount > 0;
+    final paying = state.isPending(AppState.payKey(provider.id));
 
     return DsCard(
       child: Column(
@@ -136,6 +137,7 @@ class _ClosingCard extends StatelessWidget {
                       ? DsButtonVariant.ghost
                       : DsButtonVariant.primary,
                   block: true,
+                  loading: paying,
                   onPressed: canPay ? () => _togglePaid(context) : null,
                 ),
               ),

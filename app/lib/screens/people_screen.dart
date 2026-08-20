@@ -38,6 +38,7 @@ class PeopleScreen extends StatelessWidget {
           label: '+ Nova prestadora',
           variant: DsButtonVariant.secondary,
           block: true,
+          loading: state.isPending(AppState.addProviderKey),
           onPressed: state.addProvider,
         ),
         const Padding(

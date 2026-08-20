@@ -1,20 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Android blocks cleartext HTTP by default (API 28+), and the Diárias API is
-  served over plain HTTP on the local network.
+  Android blocks cleartext HTTP by default (API 28+).
 
-  This permits cleartext for those specific hosts only, rather than flipping
-  android:usesCleartextTraffic="true" and weakening the whole app. Add a
-  <domain> entry here if the machine running the API changes address.
+  Production is HTTPS (colaboradores.fca.dev.br) and needs no exception here.
+  The entries below exist only so a debug build can talk to the API over plain
+  HTTP on the local network. Scoped to specific hosts rather than flipping
+  android:usesCleartextTraffic="true", which would weaken every connection the
+  app makes.
 -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
-        <!-- This Mac on the LAN. .26 is the current DHCP lease; .169 is listed
-             too so a static reservation there keeps working without an edit. -->
-        <domain includeSubdomains="false">192.168.10.26</domain>
-        <domain includeSubdomains="false">192.168.10.169</domain>
-        <!-- Bonjour name — survives the address changing altogether. -->
-        <domain includeSubdomains="false">MacBook-Pro-de-Felipe.local</domain>
+        <!-- The VM on the LAN. -->
+        <domain includeSubdomains="false">192.168.10.180</domain>
         <!-- The host machine as seen from the Android emulator. -->
         <domain includeSubdomains="false">10.0.2.2</domain>
         <domain includeSubdomains="false">localhost</domain>

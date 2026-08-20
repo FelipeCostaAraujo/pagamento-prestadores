@@ -21,6 +21,7 @@ class DsButton extends StatefulWidget {
     this.variant = DsButtonVariant.primary,
     this.size = DsButtonSize.md,
     this.block = false,
+    this.loading = false,
   });
 
   final String label;
@@ -33,6 +34,10 @@ class DsButton extends StatefulWidget {
   /// Stretch to the available width.
   final bool block;
 
+  /// Shows a spinner beside the label and refuses taps. Without this, a slow
+  /// action looks like a button that did nothing, and people press it again.
+  final bool loading;
+
   @override
   State<DsButton> createState() => _DsButtonState();
 }
@@ -40,7 +45,7 @@ class DsButton extends StatefulWidget {
 class _DsButtonState extends State<DsButton> {
   bool _pressed = false;
 
-  bool get _enabled => widget.onPressed != null;
+  bool get _enabled => widget.onPressed != null && !widget.loading;
 
   double get _height => switch (widget.size) {
     DsButtonSize.md => DsSize.controlMd + 4, // 48px, per the design doc
@@ -73,17 +78,32 @@ class _DsButtonState extends State<DsButton> {
               : null,
         ),
         alignment: Alignment.center,
-        child: Text(
-          widget.label,
-          textAlign: TextAlign.center,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: DsText.body(
-            size: widget.size == DsButtonSize.lg ? 16 : 15,
-            weight: DsWeight.bold,
-            height: 1,
-            color: fg,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.loading) ...[
+              SizedBox(
+                width: 15,
+                height: 15,
+                child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+              ),
+              const SizedBox(width: DsSpace.s2),
+            ],
+            Flexible(
+              child: Text(
+                widget.label,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DsText.body(
+                  size: widget.size == DsButtonSize.lg ? 16 : 15,
+                  weight: DsWeight.bold,
+                  height: 1,
+                  color: fg,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -96,7 +116,9 @@ class _DsButtonState extends State<DsButton> {
         onTapDown: _enabled ? (_) => setState(() => _pressed = true) : null,
         onTapUp: _enabled ? (_) => setState(() => _pressed = false) : null,
         onTapCancel: _enabled ? () => setState(() => _pressed = false) : null,
-        onTap: widget.onPressed,
+        // Guarded by _enabled, not just by onPressed being null: while
+        // loading the callback still exists and a tap must not re-fire it.
+        onTap: _enabled ? widget.onPressed : null,
         child: MouseRegion(
           cursor: _enabled
               ? SystemMouseCursors.click
@@ -111,7 +133,9 @@ class _DsButtonState extends State<DsButton> {
 
   /// Returns (background, foreground, border) for the current variant/state.
   (Color, Color, Color?) _colors() {
-    if (!_enabled) {
+    // A loading button keeps its variant colours: greying it out would read as
+    // "unavailable" when it is in fact working.
+    if (!_enabled && !widget.loading) {
       return (DsColors.slate100, DsColors.slate400, null);
     }
     return switch (widget.variant) {

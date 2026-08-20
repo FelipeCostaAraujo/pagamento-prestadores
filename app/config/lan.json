@@ -1,5 +1,0 @@
-{
-  "_comment": "API address on the LAN. This Mac's address works from the Mac itself and from any device on the same VLAN, so one file covers both targets. Pass it with: flutter run --dart-define-from-file=config/lan.json",
-  "_warning": "This Mac is on DHCP (lease 192.168.10.26, 24h). If the lease changes, update this value and android/app/src/main/res/xml/network_security_config.xml. A DHCP reservation on the router at 192.168.10.1 avoids that.",
-  "DIARIAS_API_URL": "http://192.168.10.26:8080"
-}

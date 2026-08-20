@@ -20,3 +20,8 @@
 
 # OS
 .DS_Store
+
+# Assinatura de release do Android — nunca versionar
+/app/android/key.properties
+*.jks
+*.keystore
