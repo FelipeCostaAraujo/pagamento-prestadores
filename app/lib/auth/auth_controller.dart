@@ -14,8 +14,10 @@ enum AuthStatus {
 /// Owns the session: restoring it at launch, logging in, logging out.
 class AuthController extends ChangeNotifier {
   AuthController({required this.api, this.store = const TokenStore()}) {
-    // Any request rejected with 401 lands here, from wherever it was made.
+    // A 401 first goes through ApiClient's refresh flow. Only an absent or
+    // rejected refresh token lands here, from wherever the request was made.
     api.onUnauthorized = _onSessionLost;
+    api.onSessionRefreshed = _onSessionRefreshed;
   }
 
   final ApiClient api;
@@ -36,28 +38,29 @@ class AuthController extends ChangeNotifier {
   bool get busy => _busy;
 
   /// Restores a stored session, verifying it against the server before trusting
-  /// it — a token can have been revoked or expired while the app was closed.
+  /// it. An expired access token is refreshed transparently by api.me().
   Future<void> restore() async {
-    final token = await store.read();
-    if (token == null) {
+    final tokens = await store.read();
+    if (tokens == null) {
       _set(AuthStatus.loggedOut);
       return;
     }
 
-    api.token = token;
+    api.token = tokens.accessToken;
+    api.refreshToken = tokens.refreshToken;
     try {
       _user = await api.me();
       _set(AuthStatus.loggedIn);
     } on ApiUnauthorized {
       // Token no longer valid; start clean.
       await store.clear();
-      api.token = null;
+      api.clearSession();
       _set(AuthStatus.loggedOut);
     } on ApiException {
       // The server is unreachable. Keep the token — it may well still be good —
       // and let the user retry from the login screen rather than silently
       // discarding a valid session because the wifi was down.
-      api.token = null;
+      api.clearSession();
       _set(AuthStatus.loggedOut);
     }
   }
@@ -74,7 +77,7 @@ class AuthController extends ChangeNotifier {
         username: username.trim(),
         password: password,
       );
-      await store.write(session.token);
+      await _persistSession(session);
       _user = session.user;
       _set(AuthStatus.loggedIn);
       return null;
@@ -108,7 +111,7 @@ class AuthController extends ChangeNotifier {
       // Already handled: the local token is cleared regardless.
     } finally {
       await store.clear();
-      api.token = null;
+      api.clearSession();
       _user = null;
       _notice = null;
       _busy = false;
@@ -116,10 +119,20 @@ class AuthController extends ChangeNotifier {
     }
   }
 
-  /// Called when the API reports 401 mid-session.
-  void _onSessionLost() {
+  Future<void> _onSessionRefreshed(AuthSession session) async {
+    await _persistSession(session);
+    _user = session.user;
+  }
+
+  Future<void> _persistSession(AuthSession session) => store.write(
+    accessToken: session.token,
+    refreshToken: session.refreshToken,
+  );
+
+  /// Called when both access and refresh credentials can no longer recover.
+  Future<void> _onSessionLost() async {
+    await store.clear();
     if (_status != AuthStatus.loggedIn) return;
-    store.clear();
     _user = null;
     _notice = 'Sua sessão expirou. Entre de novo.';
     _set(AuthStatus.loggedOut);

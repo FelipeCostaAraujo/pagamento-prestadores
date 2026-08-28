@@ -72,11 +72,14 @@ type User struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
-// Session is a successful login. Token is populated only when the session is
-// created — it is never read back out of storage.
+// Session is a successful login or refresh. The raw tokens are populated only
+// while issuing the session — storage keeps their SHA-256 digests, never these
+// bearer credentials.
 type Session struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Token            string    `json:"token"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	RefreshToken     string    `json:"refresh_token"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
 }
 
 // Provider is a prestadora: a person who works day rates.

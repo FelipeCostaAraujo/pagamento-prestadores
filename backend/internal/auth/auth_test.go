@@ -141,3 +141,13 @@ func TestNewTokenIsUniqueAndHashable(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenLifetimes(t *testing.T) {
+	if AccessTokenTTL <= 0 {
+		t.Fatalf("AccessTokenTTL = %v, want a positive duration", AccessTokenTTL)
+	}
+	if RefreshTokenTTL <= AccessTokenTTL {
+		t.Fatalf("RefreshTokenTTL = %v, want longer than access TTL %v",
+			RefreshTokenTTL, AccessTokenTTL)
+	}
+}

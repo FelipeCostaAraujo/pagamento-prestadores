@@ -91,9 +91,21 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	Token     string      `json:"token"`
-	ExpiresAt time.Time   `json:"expires_at"`
-	User      domain.User `json:"user"`
+	Token            string      `json:"token"`
+	ExpiresAt        time.Time   `json:"expires_at"`
+	RefreshToken     string      `json:"refresh_token"`
+	RefreshExpiresAt time.Time   `json:"refresh_expires_at"`
+	User             domain.User `json:"user"`
+}
+
+func sessionResponse(session domain.Session, user domain.User) loginResponse {
+	return loginResponse{
+		Token:            session.Token,
+		ExpiresAt:        session.ExpiresAt,
+		RefreshToken:     session.RefreshToken,
+		RefreshExpiresAt: session.RefreshExpiresAt,
+		User:             user,
+	}
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -148,11 +160,39 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.logins.succeed(userKey)
 	slog.Info("login", "username", user.Username)
 
-	writeJSON(w, http.StatusOK, loginResponse{
-		Token:     session.Token,
-		ExpiresAt: session.ExpiresAt,
-		User:      user,
-	})
+	writeJSON(w, http.StatusOK, sessionResponse(session, user))
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+// refresh consumes a refresh token exactly once and rotates the complete token
+// pair. It is public because an expired access token cannot pass
+// requireSession; possession of the opaque refresh token is the credential.
+func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
+	body, err := decode[refreshRequest](r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if body.RefreshToken == "" {
+		writeError(w, r, domain.Invalid("refresh_token is required"))
+		return
+	}
+
+	session, user, err := s.store.RefreshSession(r.Context(), body.RefreshToken)
+	if errors.Is(err, store.ErrInvalidCredentials) {
+		unauthorized(w, "refresh token inválido ou expirado")
+		return
+	}
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	slog.Info("session refreshed", "username", user.Username)
+	writeJSON(w, http.StatusOK, sessionResponse(session, user))
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +236,11 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := s.store.Authenticate(r.Context(), user.Username, body.CurrentPassword); err != nil {
 		if errors.Is(err, store.ErrInvalidCredentials) {
-			unauthorized(w, "senha atual incorreta")
+			// Authentication itself succeeded in requireSession. A wrong current
+			// password is not an expired bearer token, so it must not trigger the
+			// client's refresh/logout flow.
+			writeJSON(w, http.StatusForbidden,
+				errorBody{"invalid_current_password", "senha atual incorreta"})
 			return
 		}
 		writeError(w, r, err)

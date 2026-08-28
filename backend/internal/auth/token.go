@@ -8,10 +8,15 @@ import (
 	"time"
 )
 
-// SessionTTL is how long a login stays valid. Long enough that a phone app is
-// not asking for the password every week, short enough that a leaked token
-// stops working.
-const SessionTTL = 30 * 24 * time.Hour
+const (
+	// AccessTokenTTL keeps the bearer credential sent on every API request
+	// short-lived. The app can transparently replace it with the refresh token.
+	AccessTokenTTL = 15 * time.Minute
+
+	// RefreshTokenTTL is the maximum lifetime of a login. Refresh rotation does
+	// not extend it, so an active device still has to authenticate every 30 days.
+	RefreshTokenTTL = 30 * 24 * time.Hour
+)
 
 // tokenBytes is the entropy in a session token. 32 bytes of CSPRNG output is
 // far beyond guessing, which is why the database can store a plain SHA-256 of

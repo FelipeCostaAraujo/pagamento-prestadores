@@ -207,28 +207,92 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (do
 	return user, nil
 }
 
-// CreateSession issues a token for a user. Only the token's digest is stored;
-// the returned token is the sole copy.
+// CreateSession issues a short-lived access token and a long-lived refresh
+// token for a user. Only their digests are stored; the returned values are the
+// sole copies of the bearer credentials.
 func (s *Store) CreateSession(ctx context.Context, userID, userAgent string) (domain.Session, error) {
-	token, digest, err := auth.NewToken()
+	token, tokenDigest, err := auth.NewToken()
 	if err != nil {
 		return domain.Session{}, err
 	}
-	expiresAt := time.Now().Add(auth.SessionTTL)
+	refreshToken, refreshDigest, err := auth.NewToken()
+	if err != nil {
+		return domain.Session{}, err
+	}
+	now := time.Now()
+	expiresAt := now.Add(auth.AccessTokenTTL)
+	refreshExpiresAt := now.Add(auth.RefreshTokenTTL)
 
 	if len(userAgent) > 200 {
 		userAgent = userAgent[:200]
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO sessions (token_hash, user_id, expires_at, user_agent)
-		VALUES ($1, $2, $3, $4)`,
-		digest, userID, expiresAt, userAgent)
+		INSERT INTO sessions (
+			token_hash, user_id, expires_at, user_agent,
+			refresh_token_hash, refresh_expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		tokenDigest, userID, expiresAt, userAgent,
+		refreshDigest, refreshExpiresAt)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("create session: %w", err)
 	}
 
-	return domain.Session{Token: token, ExpiresAt: expiresAt}, nil
+	return domain.Session{
+		Token:            token,
+		ExpiresAt:        expiresAt,
+		RefreshToken:     refreshToken,
+		RefreshExpiresAt: refreshExpiresAt,
+	}, nil
+}
+
+// RefreshSession atomically consumes a refresh token and returns a completely
+// new token pair. Rotating both digests means a captured refresh token can be
+// used at most once. The original 30-day session deadline is not extended.
+func (s *Store) RefreshSession(ctx context.Context, refreshToken string) (domain.Session, domain.User, error) {
+	token, tokenDigest, err := auth.NewToken()
+	if err != nil {
+		return domain.Session{}, domain.User{}, err
+	}
+	newRefreshToken, refreshDigest, err := auth.NewToken()
+	if err != nil {
+		return domain.Session{}, domain.User{}, err
+	}
+
+	var (
+		session domain.Session
+		user    domain.User
+	)
+	session.Token = token
+	session.RefreshToken = newRefreshToken
+
+	err = s.pool.QueryRow(ctx, `
+		UPDATE sessions AS s
+		SET token_hash = $2,
+			expires_at = LEAST($3, s.refresh_expires_at),
+			refresh_token_hash = $4,
+			last_seen_at = now()
+		FROM users AS u
+		WHERE s.refresh_token_hash = $1
+		  AND s.refresh_expires_at > now()
+		  AND u.id = s.user_id
+		  AND u.disabled_at IS NULL
+		RETURNING s.expires_at, s.refresh_expires_at,
+			u.id, u.username, u.disabled_at, u.created_at`,
+		auth.HashToken(refreshToken), tokenDigest,
+		time.Now().Add(auth.AccessTokenTTL), refreshDigest,
+	).Scan(
+		&session.ExpiresAt, &session.RefreshExpiresAt,
+		&user.ID, &user.Username, &user.DisabledAt, &user.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.User{}, ErrInvalidCredentials
+	}
+	if err != nil {
+		return domain.Session{}, domain.User{}, fmt.Errorf("refresh session: %w", err)
+	}
+	return session, user, nil
 }
 
 // UserForToken resolves a bearer token to its user, or ErrInvalidCredentials.
@@ -275,9 +339,13 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	return nil
 }
 
-// DeleteExpiredSessions clears rows that can no longer authenticate.
+// DeleteExpiredSessions clears rows that can no longer authenticate or be
+// refreshed. Legacy rows have no refresh expiry and use their access expiry.
 func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= now()`)
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM sessions
+		WHERE (refresh_expires_at IS NOT NULL AND refresh_expires_at <= now())
+		   OR (refresh_expires_at IS NULL AND expires_at <= now())`)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired sessions: %w", err)
 	}

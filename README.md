@@ -116,8 +116,11 @@ to keep the published API closed, not to separate tenants.
 - **Passwords** are argon2id (19 MiB, t=2, p=1 — OWASP's recommended profile),
   salted per user, stored in PHC format. The parameters live inside each hash, so
   they can be raised later without invalidating existing ones.
-- **Sessions** are opaque 256-bit tokens, valid 30 days. The database stores only
-  their SHA-256, so a dump of `sessions` hands over nothing usable.
+- **Sessions** use a 15-minute access token and a rotating refresh token with a
+  fixed 30-day lifetime. Both are opaque 256-bit values; the database stores
+  only their SHA-256 digests, so a dump of `sessions` hands over no working
+  credentials. Refreshing rotates both values and never extends the 30-day
+  login deadline.
 - **No signup endpoint.** Accounts exist only via `api user add` on the server.
 - **Login throttling**: 8 failures per 15 minutes, counted per username *and* per
   client address. A lockout blocks the correct password too — that is the point,
@@ -191,15 +194,16 @@ binary floats out of the wire format.
 
 Base path `/api/v1`. All dates are `YYYY-MM-DD`.
 
-Only `/health` and `/auth/login` are public. **Everything else needs**
+Only `/health`, `/auth/login` and `/auth/refresh` are public. **Everything else needs**
 `Authorization: Bearer <token>` — new routes are registered on the authenticated
 mux, so an endpoint cannot be added unprotected by accident.
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/health` | Public |
-| `POST` | `/auth/login` | Public. `{username, password}` → `{token, expires_at, user}` |
-| `POST` | `/auth/logout` | Revokes the calling token |
+| `POST` | `/auth/login` | Public. `{username, password}` → `{token, expires_at, refresh_token, refresh_expires_at, user}` |
+| `POST` | `/auth/refresh` | Public. Consumes `{refresh_token}`, rotates the pair and returns the same session payload as login |
+| `POST` | `/auth/logout` | Revokes the calling access/refresh pair |
 | `GET` | `/auth/me` | Confirms a stored token is still valid |
 | `POST` | `/auth/password` | `{current_password, new_password}` — revokes every session |
 | `GET` | `/providers` | Active prestadoras, in display order |
@@ -214,8 +218,9 @@ mux, so an endpoint cannot be added unprotected by accident.
 | `DELETE` | `/months/{year}/{month}/providers/{id}/payment` | Reopen; returns the refreshed month |
 
 Errors are `{"code": "...", "message": "..."}` with `400` for validation, `401`
-for a missing/invalid session or wrong credentials, `404` for missing rows, `429`
-for too many login attempts (with `Retry-After`), `500` otherwise.
+for a missing/invalid session or wrong login/refresh credentials, `403` for an
+incorrect current password, `404` for missing rows, `429` for too many login
+attempts (with `Retry-After`), `500` otherwise.
 
 `total_cents` is everything worked in the month; **`outstanding_cents`** excludes
 prestadoras already paid and is what the header shows as "A pagar".
@@ -262,10 +267,11 @@ Go covers the date/period logic (half-open month bounds, December rolling into
 January, leap February), argon2id hashing (salting, tampered hashes, a hostile
 `m=` parameter), and login throttling. Flutter covers pt-BR money
 parsing/formatting round-trips, the wire models, the full auth flow (restore,
-wrong password, mid-session 401, offline logout), and widget tests that drive the
-real shell against a mocked API — the three tabs, the day sheet, month navigation
-refetching, and the offline retry state. Widget tests run at the design's 402x874
-frame so what sits below the fold matches the real device.
+wrong password, refresh rotation, concurrent 401s, rejected refresh, offline
+logout), and widget tests that drive the real shell against a mocked API — the
+three tabs, the day sheet, month navigation refetching, and the offline retry
+state. Widget tests run at the design's 402x874 frame so what sits below the fold
+matches the real device.
 
 ## Not built
 

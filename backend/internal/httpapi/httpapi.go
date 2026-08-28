@@ -29,11 +29,12 @@ func NewHandler(st *store.Store, cfg config.Config) http.Handler {
 		logins: newLoginLimiter(maxLoginFailures, loginWindow),
 	}
 
-	// Public: no session required. Deliberately only these two — there is no
+	// Public: no access token required. Deliberately only these three — there is no
 	// signup endpoint, accounts are created on the server with `api user add`.
 	public := http.NewServeMux()
 	public.HandleFunc("GET /api/v1/health", s.health)
 	public.HandleFunc("POST /api/v1/auth/login", s.login)
+	public.HandleFunc("POST /api/v1/auth/refresh", s.refresh)
 
 	// Everything else needs a valid session.
 	private := http.NewServeMux()
@@ -63,6 +64,7 @@ func NewHandler(st *store.Store, cfg config.Config) http.Handler {
 	for _, pattern := range []string{
 		"GET /api/v1/health",
 		"POST /api/v1/auth/login",
+		"POST /api/v1/auth/refresh",
 	} {
 		root.Handle(pattern, public)
 	}

@@ -34,22 +34,33 @@ class ApiTooManyAttempts extends ApiException {
 
 /// HTTP client for the Go backend.
 class ApiClient {
-  ApiClient({Uri? baseUrl, http.Client? httpClient, this.token})
-    : baseUrl = baseUrl ?? defaultBaseUrl(),
-      _http = httpClient ?? http.Client();
+  ApiClient({
+    Uri? baseUrl,
+    http.Client? httpClient,
+    this.token,
+    this.refreshToken,
+  }) : baseUrl = baseUrl ?? defaultBaseUrl(),
+       _http = httpClient ?? http.Client();
 
   final Uri baseUrl;
   final http.Client _http;
 
-  /// Session token, sent as `Authorization: Bearer <token>`. Set on login,
-  /// cleared on logout or when the server rejects it.
+  /// Short-lived access token sent as `Authorization: Bearer <token>`.
   String? token;
+
+  /// Long-lived, single-use credential sent only to the refresh endpoint.
+  String? refreshToken;
 
   bool get hasToken => token?.isNotEmpty ?? false;
 
-  /// Invoked when any call is rejected with 401, so the app can drop the stored
-  /// token and return to the login screen from wherever it was.
-  void Function()? onUnauthorized;
+  /// Persists a rotated pair before the original request is retried.
+  Future<void> Function(AuthSession session)? onSessionRefreshed;
+
+  /// Invoked only when refresh is absent or rejected, so the app can clear the
+  /// secure store and return to the login screen.
+  Future<void> Function()? onUnauthorized;
+
+  Future<AuthSession>? _refreshInFlight;
 
   static const _timeout = Duration(seconds: 15);
 
@@ -73,9 +84,9 @@ class ApiClient {
     return Uri.parse(productionUrl);
   }
 
-  Map<String, String> get _headers => {
+  Map<String, String> _headersFor(String? bearer) => {
     'Content-Type': 'application/json; charset=utf-8',
-    if (token case final t? when t.isNotEmpty) 'Authorization': 'Bearer $t',
+    if (bearer case final t? when t.isNotEmpty) 'Authorization': 'Bearer $t',
   };
 
   void dispose() => _http.close();
@@ -92,12 +103,12 @@ class ApiClient {
       'POST',
       '/api/v1/auth/login',
       body: {'username': username, 'password': password},
-      // A 401 here means "wrong password", not "session expired" — it must not
-      // trigger the global logout handler.
-      isLogin: true,
+      // A 401 here means "wrong password", not "access token expired".
+      handleUnauthorized: false,
+      includeAccessToken: false,
     );
     final session = AuthSession.fromJson(body as Map<String, dynamic>);
-    token = session.token;
+    _useSession(session);
     return session;
   }
 
@@ -113,7 +124,7 @@ class ApiClient {
     try {
       await _send('POST', '/api/v1/auth/logout');
     } finally {
-      token = null;
+      clearSession();
     }
   }
 
@@ -125,10 +136,9 @@ class ApiClient {
       'POST',
       '/api/v1/auth/password',
       body: {'current_password': currentPassword, 'new_password': newPassword},
-      isLogin: true,
     );
     // The server drops every session on a password change, including this one.
-    token = null;
+    clearSession();
   }
 
   // ------------------------------------------------------------- providers --
@@ -261,15 +271,20 @@ class ApiClient {
     String path, {
     Map<String, String>? query,
     Map<String, dynamic>? body,
-    // Set on the credential endpoints, where a 401 means "wrong password"
-    // rather than "your session died" and must not log the app out.
-    bool isLogin = false,
+    // False only for credential endpoints whose own 401 must be returned to
+    // the caller without recursively trying to refresh.
+    bool handleUnauthorized = true,
+    bool includeAccessToken = true,
+    // Every application request is retried at most once after refresh.
+    bool retryAfterRefresh = true,
   }) async {
     final uri = baseUrl.replace(
       path: path,
       queryParameters: query?.isEmpty ?? true ? null : query,
     );
-    final request = http.Request(method, uri)..headers.addAll(_headers);
+    final sentToken = includeAccessToken ? token : null;
+    final request = http.Request(method, uri)
+      ..headers.addAll(_headersFor(sentToken));
     if (body != null) request.body = jsonEncode(body);
 
     final http.Response response;
@@ -296,51 +311,129 @@ class ApiClient {
       );
     }
 
-    if (response.statusCode == 204 || response.bodyBytes.isEmpty) {
-      if (response.statusCode >= 400) {
-        throw _errorFor(response, null, isLogin);
+    dynamic decoded;
+    if (response.bodyBytes.isNotEmpty) {
+      // Decode explicitly as UTF-8: http defaults to latin-1 when the response
+      // has no charset, which would mangle "diárias".
+      final text = utf8.decode(response.bodyBytes);
+      try {
+        decoded = jsonDecode(text);
+      } catch (_) {
+        if (response.statusCode < 400) {
+          throw ApiException(
+            'Resposta inesperada da API (${response.statusCode}).',
+            statusCode: response.statusCode,
+          );
+        }
       }
-      return null;
-    }
-
-    // Decode explicitly as UTF-8: http defaults to latin-1 when the response
-    // has no charset, which would mangle "diárias".
-    final text = utf8.decode(response.bodyBytes);
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(text);
-    } catch (_) {
-      throw ApiException(
-        'Resposta inesperada da API (${response.statusCode}).',
-        statusCode: response.statusCode,
-      );
     }
 
     if (response.statusCode >= 400) {
       final message = decoded is Map<String, dynamic>
           ? decoded['message'] as String?
           : null;
-      throw _errorFor(response, message, isLogin);
+
+      if (response.statusCode == 401 && handleUnauthorized) {
+        if (retryAfterRefresh) {
+          // Another concurrent request may already have refreshed while this
+          // response was in flight. Retry with its new access token instead of
+          // rotating the refresh token for a second time.
+          if (token != null && token != sentToken) {
+            return _send(
+              method,
+              path,
+              query: query,
+              body: body,
+              handleUnauthorized: handleUnauthorized,
+              includeAccessToken: includeAccessToken,
+              retryAfterRefresh: false,
+            );
+          }
+
+          if (refreshToken?.isNotEmpty ?? false) {
+            try {
+              await _refreshSession();
+            } on ApiUnauthorized {
+              await _invalidateSession();
+              rethrow;
+            }
+            return _send(
+              method,
+              path,
+              query: query,
+              body: body,
+              handleUnauthorized: handleUnauthorized,
+              includeAccessToken: includeAccessToken,
+              retryAfterRefresh: false,
+            );
+          }
+        }
+
+        final error = ApiUnauthorized(message ?? 'Sessão expirada.');
+        await _invalidateSession();
+        throw error;
+      }
+
+      throw _errorFor(response, message);
     }
+
+    if (response.statusCode == 204 || response.bodyBytes.isEmpty) return null;
     return decoded;
   }
 
+  Future<AuthSession> _refreshSession() {
+    final current = _refreshInFlight;
+    if (current != null) return current;
+
+    late final Future<AuthSession> refresh;
+    refresh = _performRefresh().whenComplete(() {
+      if (identical(_refreshInFlight, refresh)) _refreshInFlight = null;
+    });
+    _refreshInFlight = refresh;
+    return refresh;
+  }
+
+  Future<AuthSession> _performRefresh() async {
+    final credential = refreshToken;
+    if (credential == null || credential.isEmpty) {
+      throw ApiUnauthorized('Refresh token ausente.');
+    }
+
+    final body = await _send(
+      'POST',
+      '/api/v1/auth/refresh',
+      body: {'refresh_token': credential},
+      handleUnauthorized: false,
+      includeAccessToken: false,
+      retryAfterRefresh: false,
+    );
+    final session = AuthSession.fromJson(body as Map<String, dynamic>);
+    _useSession(session);
+    await onSessionRefreshed?.call(session);
+    return session;
+  }
+
+  void _useSession(AuthSession session) {
+    token = session.token;
+    refreshToken = session.refreshToken;
+  }
+
+  void clearSession() {
+    token = null;
+    refreshToken = null;
+  }
+
+  Future<void> _invalidateSession() async {
+    clearSession();
+    await onUnauthorized?.call();
+  }
+
   /// Maps a failed response onto the right exception type.
-  ApiException _errorFor(
-    http.Response response,
-    String? message,
-    bool isLogin,
-  ) {
+  ApiException _errorFor(http.Response response, String? message) {
     final fallback = 'A API respondeu ${response.statusCode}.';
 
     switch (response.statusCode) {
       case 401:
-        if (!isLogin) {
-          // The stored token is no longer good; drop it and let the app show
-          // the login screen instead of an error the user cannot act on.
-          token = null;
-          onUnauthorized?.call();
-        }
         return ApiUnauthorized(message ?? 'Sessão expirada.');
       case 429:
         final seconds = int.tryParse(response.headers['retry-after'] ?? '');
@@ -363,16 +456,25 @@ class AuthSession {
   const AuthSession({
     required this.token,
     required this.expiresAt,
+    this.refreshToken,
+    this.refreshExpiresAt,
     required this.user,
   });
 
   final String token;
   final DateTime expiresAt;
+  final String? refreshToken;
+  final DateTime? refreshExpiresAt;
   final AuthUser user;
 
   factory AuthSession.fromJson(Map<String, dynamic> json) => AuthSession(
     token: json['token'] as String,
     expiresAt: DateTime.parse(json['expires_at'] as String),
+    refreshToken: json['refresh_token'] as String?,
+    refreshExpiresAt: switch (json['refresh_expires_at']) {
+      final String value => DateTime.parse(value),
+      _ => null,
+    },
     user: AuthUser.fromJson(json['user'] as Map<String, dynamic>),
   );
 }
