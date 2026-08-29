@@ -16,6 +16,8 @@
              machines are on DHCP, so these need updating if a lease changes. -->
         <domain includeSubdomains="false">192.168.10.27</domain>
         <domain includeSubdomains="false">192.168.10.26</domain>
+        <!-- Work MacBook used for USB/LAN device tests. -->
+        <domain includeSubdomains="false">192.168.10.169</domain>
         <!-- The host machine as seen from the Android emulator. -->
         <domain includeSubdomains="false">10.0.2.2</domain>
         <domain includeSubdomains="false">localhost</domain>

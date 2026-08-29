@@ -154,20 +154,28 @@ func (s *Scheduler) sendPaymentReminder(ctx context.Context, now time.Time) erro
 
 // deliver sends to every registered device and forgets the ones FCM rejects.
 func (s *Scheduler) deliver(ctx context.Context, msg push.Message) error {
-	tokens, err := s.store.AllDeviceTokens(ctx)
+	devices, err := s.store.AllDeviceTargets(ctx)
 	if err != nil {
 		return err
 	}
-	if len(tokens) == 0 {
+	if len(devices) == 0 {
 		// Nobody has the app installed with push allowed. Not an error, but
 		// worth saying — otherwise a silent phone looks like a broken feature.
 		slog.Warn("reminder due but no device is registered", "title", msg.Title)
 		return nil
 	}
 
-	stale, err := s.sender.Send(ctx, tokens, msg)
-	for _, token := range stale {
-		if rmErr := s.store.UnregisterDevice(ctx, token); rmErr != nil {
+	targets := make([]push.Target, 0, len(devices))
+	for _, device := range devices {
+		targets = append(targets, push.Target{
+			Identifier: device.Identifier,
+			FID:        strings.HasSuffix(device.Platform, "-fid"),
+		})
+	}
+
+	stale, err := s.sender.Send(ctx, targets, msg)
+	for _, identifier := range stale {
+		if rmErr := s.store.UnregisterDevice(ctx, identifier); rmErr != nil {
 			slog.Error("drop stale token", "error", rmErr)
 		}
 	}

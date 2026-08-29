@@ -51,26 +51,33 @@ func (s *Store) UnregisterDevice(ctx context.Context, token string) error {
 	return nil
 }
 
-// AllDeviceTokens returns every token that should receive household reminders.
+// DeviceTarget is one app installation that should receive reminders.
+// Platform distinguishes the newer FID registration from legacy FCM tokens.
+type DeviceTarget struct {
+	Identifier string
+	Platform   string
+}
+
+// AllDeviceTargets returns every app installation that should receive household reminders.
 //
 // The data is shared, so reminders go to everyone signed in: whoever acts on it
 // first settles it for the rest.
-func (s *Store) AllDeviceTokens(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT token FROM device_tokens`)
+func (s *Store) AllDeviceTargets(ctx context.Context) ([]DeviceTarget, error) {
+	rows, err := s.pool.Query(ctx, `SELECT token, platform FROM device_tokens`)
 	if err != nil {
-		return nil, fmt.Errorf("list device tokens: %w", err)
+		return nil, fmt.Errorf("list device targets: %w", err)
 	}
 	defer rows.Close()
 
-	tokens := make([]string, 0, 4)
+	targets := make([]DeviceTarget, 0, 4)
 	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
-			return nil, fmt.Errorf("scan token: %w", err)
+		var target DeviceTarget
+		if err := rows.Scan(&target.Identifier, &target.Platform); err != nil {
+			return nil, fmt.Errorf("scan device target: %w", err)
 		}
-		tokens = append(tokens, t)
+		targets = append(targets, target)
 	}
-	return tokens, rows.Err()
+	return targets, rows.Err()
 }
 
 // DueWorkReminders returns the people who were expected today, whose reminder

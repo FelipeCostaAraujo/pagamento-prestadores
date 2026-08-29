@@ -267,11 +267,14 @@ func TestRegisteringADeviceMovesItBetweenAccounts(t *testing.T) {
 		t.Fatalf("re-register: %v", err)
 	}
 
-	tokens, err := st.AllDeviceTokens(ctx)
+	targets, err := st.AllDeviceTargets(ctx)
 	if err != nil {
-		t.Fatalf("tokens: %v", err)
+		t.Fatalf("targets: %v", err)
 	}
-	if len(tokens) != 1 {
-		t.Errorf("got %d tokens, want 1 — the device was duplicated", len(tokens))
+	if len(targets) != 1 {
+		t.Errorf("got %d targets, want 1 — the device was duplicated", len(targets))
+	}
+	if len(targets) == 1 && targets[0].Platform != "android" {
+		t.Errorf("platform = %q, want android", targets[0].Platform)
 	}
 }

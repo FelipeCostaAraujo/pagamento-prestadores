@@ -50,19 +50,18 @@ services:
       DIARIAS_SEED: "false"
       # Reminders. The credential is mounted read-only below; without it the
       # API runs exactly as before, just without push.
-      DIARIAS_FCM_CREDENTIALS: ${DIARIAS_FCM_CREDENTIALS:-}
+      DIARIAS_FCM_CREDENTIALS: ${DIARIAS_FCM_CREDENTIALS:-/run/secrets/fcm.json}
       DIARIAS_TIMEZONE: ${DIARIAS_TIMEZONE:-America/Sao_Paulo}
       DIARIAS_PAYMENT_REMINDER_DAY: ${DIARIAS_PAYMENT_REMINDER_DAY:-5}
     volumes:
-      # Put the service-account JSON at ./secrets/fcm.json on the VM and set
-      # DIARIAS_FCM_CREDENTIALS=/run/secrets/fcm.json in .env. Read-only, and
-      # gitignored — it authorises sending push as your Firebase project.
+      # Put the service-account JSON at ./secrets/fcm.json on the VM. The
+      # environment above points here by default. Read-only and gitignored: it
+      # authorises sending push as your Firebase project.
       - ./secrets:/run/secrets:ro
     ports:
-      # Bound to loopback on purpose: the reverse proxy reaches it over
-      # localhost, and nothing from the internet can hit the API directly and
-      # bypass TLS. Publishing "7000:8081" instead would expose plain HTTP —
-      # and with it, passwords — on the VM's public address.
+      # Production contract: the host publishes port 7000 and the reverse
+      # proxy forwards the public HTTPS endpoint to it. The VM firewall must
+      # prevent untrusted clients from reaching this plain-HTTP port directly.
       - "7000:8081"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/api/v1/health"]

@@ -85,18 +85,26 @@ type Message struct {
 	Data map[string]string
 }
 
-// Send delivers msg to every token, and reports the tokens FCM says are dead so
-// the caller can forget them.
+// Target identifies one registered app installation. New clients use a
+// Firebase Installation ID; legacy token targeting stays available for older
+// Android/iOS builds during Firebase's migration period.
+type Target struct {
+	Identifier string
+	FID        bool
+}
+
+// Send delivers msg to every target, and reports the identifiers FCM says are
+// dead so the caller can forget them.
 //
 // A failure for one device never stops the others: a stale token on an old
 // phone must not silence the reminder on the current one.
-func (s *Sender) Send(ctx context.Context, tokens []string, msg Message) (stale []string, err error) {
+func (s *Sender) Send(ctx context.Context, targets []Target, msg Message) (stale []string, err error) {
 	var firstErr error
-	for _, token := range tokens {
-		dead, err := s.sendOne(ctx, token, msg)
+	for _, target := range targets {
+		dead, err := s.sendOne(ctx, target, msg)
 		switch {
 		case dead:
-			stale = append(stale, token)
+			stale = append(stale, target.Identifier)
 		case err != nil:
 			slog.Error("push failed", "error", err)
 			if firstErr == nil {
@@ -107,12 +115,16 @@ func (s *Sender) Send(ctx context.Context, tokens []string, msg Message) (stale 
 	return stale, firstErr
 }
 
-// sendOne posts a single message. dead is true when FCM says the token no
+// sendOne posts a single message. dead is true when FCM says the target no
 // longer exists, which is a normal outcome after an uninstall.
-func (s *Sender) sendOne(ctx context.Context, token string, msg Message) (dead bool, err error) {
+func (s *Sender) sendOne(ctx context.Context, target Target, msg Message) (dead bool, err error) {
+	targetField := "token"
+	if target.FID {
+		targetField = "fid"
+	}
 	payload := map[string]any{
 		"message": map[string]any{
-			"token": token,
+			targetField: target.Identifier,
 			"notification": map[string]any{
 				"title": msg.Title,
 				"body":  msg.Body,
@@ -154,8 +166,8 @@ func (s *Sender) sendOne(ctx context.Context, token string, msg Message) (dead b
 	}
 
 	detail, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-	// 404 UNREGISTERED and 400 on a malformed token both mean this token will
-	// never work again.
+	// 404 UNREGISTERED and 400 on a malformed identifier both mean this target
+	// will never work again.
 	if resp.StatusCode == http.StatusNotFound ||
 		bytes.Contains(detail, []byte("UNREGISTERED")) ||
 		bytes.Contains(detail, []byte("INVALID_ARGUMENT")) {

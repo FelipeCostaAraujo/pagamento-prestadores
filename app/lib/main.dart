@@ -45,9 +45,6 @@ class _DiariasAppState extends State<DiariasApp> {
     _state.addListener(_onStateChanged);
     // Checks for a stored token before deciding which screen to show.
     _auth.restore();
-    // Re-registers the push token, in case FCM rotated it while the app was
-    // closed. A no-op when the user has reminders off.
-    _reminders.refresh();
   }
 
   void _onStateChanged() {
@@ -61,6 +58,7 @@ class _DiariasAppState extends State<DiariasApp> {
     _state.removeListener(_onStateChanged);
     _auth.removeListener(_onAuthChanged);
     _auth.dispose();
+    _reminders.dispose();
     _state.dispose();
     _api.dispose();
     super.dispose();
@@ -78,6 +76,9 @@ class _DiariasAppState extends State<DiariasApp> {
     switch (status) {
       case AuthStatus.loggedIn:
         _state.load();
+        // The device endpoint is authenticated. Waiting until the stored
+        // session has been restored avoids racing this request against login.
+        _reminders.refresh();
         // Crash reports become answerable when you know whose phone it was.
         FirebaseSetup.setUser(_auth.user?.username);
       case AuthStatus.loggedOut:

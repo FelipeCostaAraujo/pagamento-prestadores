@@ -151,10 +151,10 @@ docker compose exec -T api /api user add marilia <<< 'uma-senha-bem-longa'
 
 ## Deploying on the VM
 
-The API listens on `:8081` in the container, and compose publishes it on
-**`127.0.0.1:7000`** — loopback only, on purpose. The reverse proxy reaches it
-over localhost, and nothing on the internet can hit plain HTTP directly and
-bypass TLS. Point the proxy at `http://127.0.0.1:7000`.
+The API listens on `:8081` in the container, and the production compose
+publishes it as **`7000:8081`**. Point the reverse proxy at port 7000 and use the
+VM firewall to prevent untrusted clients from reaching that plain-HTTP port
+directly.
 
 ```bash
 docker compose up -d          # db + api
@@ -168,9 +168,9 @@ plain HTTP anyone on the path reads it. Terminate TLS at the proxy and let only
 HTTPS reach the outside.
 
 `DIARIAS_TRUST_PROXY=true` is set in compose so login throttling sees the real
-client address instead of the proxy's. That is safe *only* because the API port
-is bound to loopback — if it were ever published publicly, a caller could forge
-`X-Forwarded-For` and evade the per-IP limit.
+client address instead of the proxy's. Because port 7000 is published on the
+host, the VM firewall must restrict direct access; otherwise a caller could
+forge `X-Forwarded-For` and evade the per-IP limit.
 
 ## Data model
 

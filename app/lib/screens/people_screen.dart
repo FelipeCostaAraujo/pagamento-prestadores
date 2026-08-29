@@ -504,10 +504,7 @@ class _PhoneFieldState extends State<_PhoneField> {
   }
 }
 
-/// Turns the end-of-month reminder on or off.
-///
-/// Scheduled locally on the phone, so it works with the app closed and with no
-/// network — and needs no push service.
+/// Turns this device's push reminders on or off.
 class _ReminderToggle extends StatefulWidget {
   const _ReminderToggle();
 
@@ -518,12 +515,6 @@ class _ReminderToggle extends StatefulWidget {
 class _ReminderToggleState extends State<_ReminderToggle> {
   bool? _enabled;
   bool _busy = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
 
   Future<void> _load() async {
     final reminders = ReminderScope.maybeOf(context);
@@ -585,7 +576,7 @@ class _ReminderToggleState extends State<_ReminderToggle> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Lembrete de fechamento',
+                  'Lembretes no celular',
                   style: DsText.body(
                     size: 14,
                     weight: DsWeight.bold,
@@ -595,7 +586,7 @@ class _ReminderToggleState extends State<_ReminderToggle> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'No último dia do mês, às 19h',
+                  'Avisos para anotar a diária e para pagar o mês',
                   style: DsText.body(
                     size: 12,
                     height: 1.3,

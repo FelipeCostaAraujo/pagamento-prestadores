@@ -90,4 +90,11 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
+    // MainActivity bridges the FID-based registration API while FlutterFire
+    // does not expose FirebaseMessaging.register() yet. Keep this BoM aligned
+    // with firebase_core 4.14.0.
+    implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
+    implementation("com.google.firebase:firebase-installations")
+    implementation("com.google.firebase:firebase-messaging")
 }

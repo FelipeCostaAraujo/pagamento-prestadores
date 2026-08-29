@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,6 +24,7 @@ class ReminderService {
   final FlutterLocalNotificationsPlugin _plugin;
 
   static const _enabledKey = 'diarias.reminder_enabled';
+  static const _identifierKey = 'diarias.reminder_identifier';
 
   /// Must match the `channel_id` the server sets on every push, or Android
   /// silently drops the notification into a default channel the user cannot
@@ -29,7 +32,8 @@ class ReminderService {
   static const channelId = 'fechamento';
 
   bool _ready = false;
-  String? _token;
+  String? _identifier;
+  StreamSubscription<String>? _tokenRefreshSubscription;
 
   Future<void> _ensureReady() async {
     if (_ready) return;
@@ -95,23 +99,30 @@ class ReminderService {
     }
 
     await prefs.setBool(_enabledKey, true);
+    _listenForTokenRefresh();
     return true;
   }
 
-  /// Re-registers on launch, so a token rotated by FCM while the app was closed
+  /// Re-registers on launch, so a token/FID changed while the app was closed
   /// does not silently stop the reminders.
   Future<void> refresh() async {
     if (!await isEnabled()) return;
     await _ensureReady();
-    await _register();
+    if (await _register()) _listenForTokenRefresh();
   }
 
   Future<bool> _register() async {
-    final token = await FirebaseSetup.messagingToken();
-    if (token == null || token.isEmpty) return false;
+    final identifier = await FirebaseSetup.messagingIdentifier();
+    if (identifier == null || identifier.isEmpty) return false;
+    return _registerIdentifier(identifier);
+  }
+
+  Future<bool> _registerIdentifier(String identifier) async {
     try {
-      await api.registerDevice(token: token, platform: _platform);
-      _token = token;
+      await api.registerDevice(token: identifier, platform: _platform);
+      _identifier = identifier;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_identifierKey, identifier);
       return true;
     } on ApiException catch (e) {
       debugPrint('registerDevice failed: $e');
@@ -119,21 +130,39 @@ class ReminderService {
     }
   }
 
+  void _listenForTokenRefresh() {
+    _tokenRefreshSubscription ??= FirebaseSetup.messagingTokenRefreshes.listen(
+      (token) async {
+        if (token.isEmpty || !await isEnabled()) return;
+        await _registerIdentifier(token);
+      },
+      onError: (Object error) {
+        debugPrint('FCM token refresh failed: $error');
+      },
+    );
+  }
+
+  void dispose() {
+    _tokenRefreshSubscription?.cancel();
+  }
+
   Future<void> _unregister() async {
-    final token = _token ?? await FirebaseSetup.messagingToken();
-    if (token == null || token.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final identifier = _identifier ?? prefs.getString(_identifierKey);
+    if (identifier == null || identifier.isEmpty) return;
     try {
-      await api.unregisterDevice(token);
-      _token = null;
+      await api.unregisterDevice(identifier);
+      _identifier = null;
+      await prefs.remove(_identifierKey);
     } on ApiException catch (e) {
-      // The local preference is still turned off; a token left behind stops
-      // working on its own once FCM sees the app is gone.
+      // Keep the identifier persisted. If the user enables and disables the
+      // feature again, removal from the server can be retried.
       debugPrint('unregisterDevice failed: $e');
     }
   }
 
   static String get _platform => switch (defaultTargetPlatform) {
-    TargetPlatform.android => 'android',
+    TargetPlatform.android => 'android-fid',
     TargetPlatform.iOS => 'ios',
     TargetPlatform.macOS => 'macos',
     _ => 'outro',

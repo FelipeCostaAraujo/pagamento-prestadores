@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import '../firebase_options.dart';
 
@@ -14,6 +15,8 @@ import '../firebase_options.dart';
 /// must still open and let someone mark a day. Nothing in this file is allowed
 /// to throw into startup.
 abstract final class FirebaseSetup {
+  static const _pushChannel = MethodChannel('br.com.felipearaujo.diarias/push');
+
   static bool _ready = false;
 
   /// True once Firebase initialised successfully. The rest of the app can use
@@ -83,21 +86,33 @@ abstract final class FirebaseSetup {
     }
   }
 
-  /// Registers for push and returns the device token.
+  /// Registers for push and returns the identifier accepted by FCM.
   ///
-  /// Nothing consumes this yet: sending a push needs the backend to store
-  /// tokens and hold a service-account credential. The permission request is
-  /// deliberately not made here — asking at launch, before the user has seen
-  /// what the app does, is how you get denied.
-  static Future<String?> messagingToken() async {
+  /// Android's current native SDK uses the Firebase Installation ID (FID).
+  /// FlutterFire does not expose that registration API yet, so the Android
+  /// host bridges it through [_pushChannel]. Other platforms keep using their
+  /// registration token until their client path is migrated too.
+  static Future<String?> messagingIdentifier() async {
     if (!_ready) return null;
     try {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        return await _pushChannel.invokeMethod<String>('registerInstallation');
+      }
       return await FirebaseMessaging.instance.getToken();
     } catch (e) {
-      debugPrint('FirebaseMessaging.getToken failed: $e');
+      debugPrint('Firebase push registration failed: $e');
       return null;
     }
   }
+
+  /// Emits replacement tokens issued by FCM while the app is alive.
+  ///
+  /// Android FIDs are refreshed by the native SDK and re-uploaded on launch.
+  /// FlutterFire does not expose the native onRegistered callback yet.
+  static Stream<String> get messagingTokenRefreshes =>
+      _ready && (kIsWeb || defaultTargetPlatform != TargetPlatform.android)
+      ? FirebaseMessaging.instance.onTokenRefresh
+      : const Stream.empty();
 
   /// Asks for push permission. Call it from a screen where the user has just
   /// asked for something that needs it.
