@@ -48,6 +48,16 @@ services:
       DIARIAS_CORS_ORIGINS: ${DIARIAS_CORS_ORIGINS:-*}
       # Never seed the demo prestadoras into production.
       DIARIAS_SEED: "false"
+      # Reminders. The credential is mounted read-only below; without it the
+      # API runs exactly as before, just without push.
+      DIARIAS_FCM_CREDENTIALS: ${DIARIAS_FCM_CREDENTIALS:-}
+      DIARIAS_TIMEZONE: ${DIARIAS_TIMEZONE:-America/Sao_Paulo}
+      DIARIAS_PAYMENT_REMINDER_DAY: ${DIARIAS_PAYMENT_REMINDER_DAY:-5}
+    volumes:
+      # Put the service-account JSON at ./secrets/fcm.json on the VM and set
+      # DIARIAS_FCM_CREDENTIALS=/run/secrets/fcm.json in .env. Read-only, and
+      # gitignored — it authorises sending push as your Firebase project.
+      - ./secrets:/run/secrets:ro
     ports:
       # Bound to loopback on purpose: the reverse proxy reaches it over
       # localhost, and nothing from the internet can hit the API directly and

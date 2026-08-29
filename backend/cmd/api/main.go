@@ -15,7 +15,13 @@ import (
 	"github.com/felipearaujo/diarias/backend/internal/config"
 	"github.com/felipearaujo/diarias/backend/internal/db"
 	"github.com/felipearaujo/diarias/backend/internal/httpapi"
+	"github.com/felipearaujo/diarias/backend/internal/push"
+	"github.com/felipearaujo/diarias/backend/internal/reminders"
 	"github.com/felipearaujo/diarias/backend/internal/store"
+
+	// Embeds the timezone database so the Alpine image does not need tzdata
+	// installed. Reminder times are meaningless without it.
+	_ "time/tzdata"
 )
 
 func main() {
@@ -79,6 +85,7 @@ func run() error {
 	}
 
 	go sweepSessions(ctx, st)
+	startReminders(ctx, st, cfg)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -110,6 +117,34 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// startReminders brings up the push scheduler, or explains why it stays off.
+//
+// Reminders are a convenience: a missing or broken credential must never stop
+// the API from serving, so every failure here is logged and swallowed.
+func startReminders(ctx context.Context, st *store.Store, cfg config.Config) {
+	location, err := time.LoadLocation(cfg.Timezone)
+	if err != nil {
+		slog.Error("reminders disabled: unknown timezone",
+			"timezone", cfg.Timezone, "error", err)
+		return
+	}
+
+	sender, err := push.New(ctx, cfg.FCMCredentials)
+	if errors.Is(err, push.ErrDisabled) {
+		slog.Warn("reminders disabled: set DIARIAS_FCM_CREDENTIALS to the " +
+			"service-account JSON to enable push")
+		return
+	}
+	if err != nil {
+		slog.Error("reminders disabled: cannot use the service account",
+			"path", cfg.FCMCredentials, "error", err)
+		return
+	}
+
+	slog.Info("push enabled", "firebase_project", sender.ProjectID())
+	go reminders.New(st, sender, location, cfg.PaymentReminderDay).Run(ctx)
 }
 
 // sweepSessions removes expired rows periodically.

@@ -75,6 +75,8 @@ class Provider {
     required this.colorIndex,
     required this.position,
     this.phone = '',
+    this.remindWeekdays = const [],
+    this.remindAt = '19:00',
   });
 
   final String id;
@@ -83,6 +85,15 @@ class Provider {
 
   /// As typed. Empty means the closing cannot be sent to her directly.
   final String phone;
+
+  /// Days this person is expected, 0=Sunday..6=Saturday. Empty means no
+  /// routine — someone who only comes when called.
+  final List<int> remindWeekdays;
+
+  /// Local time to be asked whether the day was recorded, "HH:MM".
+  final String remindAt;
+
+  bool get hasSchedule => remindWeekdays.isNotEmpty;
 
   bool get hasPhone => phone.trim().isNotEmpty;
 
@@ -124,6 +135,10 @@ class Provider {
     colorIndex: (json['color_index'] as num).toInt(),
     position: (json['position'] as num).toInt(),
     phone: (json['phone'] as String?) ?? '',
+    remindWeekdays: ((json['remind_weekdays'] as List<dynamic>?) ?? const [])
+        .map((d) => (d as num).toInt())
+        .toList(growable: false),
+    remindAt: (json['remind_at'] as String?) ?? '19:00',
   );
 
   Map<String, dynamic> toJson() => {
@@ -133,6 +148,8 @@ class Provider {
     'color_index': colorIndex,
     'position': position,
     'phone': phone,
+    'remind_weekdays': remindWeekdays,
+    'remind_at': remindAt,
   };
 
   Provider copyWith({String? name, int? defaultRateCents, String? phone}) =>
@@ -143,6 +160,8 @@ class Provider {
         colorIndex: colorIndex,
         position: position,
         phone: phone ?? this.phone,
+        remindWeekdays: remindWeekdays,
+        remindAt: remindAt,
       );
 }
 

@@ -1,6 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import '../pdf/closing_pdf.dart';
 
 import '../format.dart';
 import '../models/models.dart';
@@ -86,6 +92,46 @@ class _ShareDialog extends StatelessWidget {
     );
   }
 
+  /// Builds the month's statement and hands it to the system share sheet.
+  ///
+  /// Sharing rather than opening WhatsApp directly: a PDF is something you may
+  /// also want to save, e-mail or print, and the share sheet already lists
+  /// WhatsApp as the first option on a phone that has it.
+  Future<void> _sharePdf(BuildContext context) async {
+    try {
+      final bytes = await ClosingPdf.build(
+        closing: closing,
+        year: state.year,
+        month: state.month,
+      );
+
+      // A real file rather than raw bytes, so the receiving app shows a
+      // sensible name instead of "documento".
+      final dir = await getTemporaryDirectory();
+      final name =
+          'fechamento-${closing.provider.firstName.toLowerCase()}-'
+          '${state.year}-${state.month.toString().padLeft(2, '0')}.pdf';
+      final file = File('${dir.path}/$name');
+      await file.writeAsBytes(bytes);
+
+      if (!context.mounted) return;
+      Navigator.of(context).pop();
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'application/pdf')],
+          text: closingMessage(closing, state.month),
+          subject:
+              'Fechamento de ${monthName(state.month)} — '
+              '${closing.provider.displayName}',
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      state.showToast('Não consegui gerar o PDF: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final message = closingMessage(closing, state.month);
@@ -156,6 +202,13 @@ class _ShareDialog extends StatelessWidget {
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ],
+            ),
+            const SizedBox(height: DsSpace.s2),
+            DsButton(
+              label: 'Enviar extrato em PDF',
+              variant: DsButtonVariant.secondary,
+              block: true,
+              onPressed: () => _sharePdf(context),
             ),
             if (!closing.provider.hasPhone) ...[
               const SizedBox(height: DsSpace.s3),

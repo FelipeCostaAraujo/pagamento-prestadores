@@ -251,6 +251,10 @@ class _ProviderCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: DsSpace.s3),
+          const Divider(height: 1, color: DsColors.borderSubtle),
+          const SizedBox(height: DsSpace.s3),
+          _ScheduleEditor(state: state, provider: provider),
+          const SizedBox(height: DsSpace.s3),
           Text(
             dayCount == 1
                 ? '1 diária marcada em ${monthName(state.month)}'
@@ -607,6 +611,184 @@ class _ReminderToggleState extends State<_ReminderToggle> {
             activeThumbColor: DsColors.brand,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Which weekdays this person is expected, and when to be asked about the day.
+///
+/// Empty means no routine — the case for someone who only comes when called,
+/// and the reason this is opt-in rather than a default schedule.
+class _ScheduleEditor extends StatelessWidget {
+  const _ScheduleEditor({required this.state, required this.provider});
+
+  final AppState state;
+  final Provider provider;
+
+  static const _initials = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+  static const _names = [
+    'domingo',
+    'segunda',
+    'terça',
+    'quarta',
+    'quinta',
+    'sexta',
+    'sábado',
+  ];
+
+  void _toggle(int weekday) {
+    final next = [...provider.remindWeekdays];
+    if (!next.remove(weekday)) next.add(weekday);
+    next.sort();
+    state.setProviderSchedule(provider.id, weekdays: next);
+  }
+
+  Future<void> _pickTime(BuildContext context) async {
+    final parts = provider.remindAt.split(':');
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(
+        hour: int.tryParse(parts.first) ?? 19,
+        minute: int.tryParse(parts.last) ?? 0,
+      ),
+      helpText: 'Lembrar às',
+    );
+    if (picked == null) return;
+    final value =
+        '${picked.hour.toString().padLeft(2, '0')}:'
+        '${picked.minute.toString().padLeft(2, '0')}';
+    await state.setProviderSchedule(provider.id, remindAt: value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = DsPalette.at(provider.colorIndex);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Dias que costuma vir',
+                style: DsText.body(
+                  size: 13,
+                  height: 1.3,
+                  color: DsColors.textMuted,
+                ),
+              ),
+            ),
+            if (provider.hasSchedule)
+              GestureDetector(
+                onTap: () => _pickTime(context),
+                child: DsPill(
+                  height: 30,
+                  padding: const EdgeInsets.symmetric(horizontal: DsSpace.s3),
+                  background: DsColors.surfaceSunken,
+                  border: DsColors.borderSubtle,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.schedule,
+                        size: 14,
+                        color: DsColors.textMuted,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        provider.remindAt,
+                        style: DsText.body(
+                          size: 13,
+                          weight: DsWeight.bold,
+                          height: 1,
+                          color: DsColors.textStrong,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: DsSpace.s2),
+        Row(
+          children: [
+            for (var day = 0; day < 7; day++)
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: _WeekdayToggle(
+                    label: _initials[day],
+                    semanticLabel: _names[day],
+                    selected: provider.remindWeekdays.contains(day),
+                    accent: palette.dot,
+                    onTap: () => _toggle(day),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: DsSpace.s2),
+        Text(
+          provider.hasSchedule
+              ? 'Você será lembrado às ${provider.remindAt} de anotar a diária, '
+                    'se ainda não tiver anotado.'
+              : 'Sem dias fixos — nenhum lembrete será enviado.',
+          style: DsText.body(size: 12, height: 1.4, color: DsColors.textMuted),
+        ),
+      ],
+    );
+  }
+}
+
+class _WeekdayToggle extends StatelessWidget {
+  const _WeekdayToggle({
+    required this.label,
+    required this.semanticLabel,
+    required this.selected,
+    required this.accent,
+    required this.onTap,
+  });
+
+  final String label;
+  final String semanticLabel;
+  final bool selected;
+  final Color accent;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: semanticLabel,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(DsRadius.sm),
+        child: AnimatedContainer(
+          duration: DsMotion.fast,
+          curve: DsMotion.easeOut,
+          height: 36,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? accent : DsColors.surfaceCard,
+            border: Border.all(
+              color: selected ? accent : DsColors.borderStrong,
+            ),
+            borderRadius: BorderRadius.circular(DsRadius.sm),
+          ),
+          child: Text(
+            label,
+            style: DsText.body(
+              size: 13,
+              weight: DsWeight.bold,
+              height: 1,
+              color: selected ? Colors.white : DsColors.textBody,
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -107,9 +107,25 @@ type Provider struct {
 	ColorIndex       int    `json:"color_index"`
 	Position         int    `json:"position"`
 	// As typed. Empty means the closing cannot be sent to her directly.
-	Phone     string    `json:"phone"`
+	Phone string `json:"phone"`
+	// Days this person is expected, 0=Sunday..6=Saturday. Empty means no
+	// routine — someone who only comes when called.
+	RemindWeekdays []int `json:"remind_weekdays"`
+	// Local time of day to ask whether the day was recorded, "HH:MM". Per
+	// provider because a cleaner leaving at 18h and a class ending at 21h do
+	// not share a sensible reminder hour.
+	RemindAt  string    `json:"remind_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// HasSchedule reports whether this provider generates work reminders.
+func (p Provider) HasSchedule() bool { return len(p.RemindWeekdays) > 0 }
+
+// Device is one install that may receive a push.
+type Device struct {
+	Token    string `json:"token"`
+	Platform string `json:"platform"`
 }
 
 // EntryKind distinguishes a full day from a half day and from an absence.

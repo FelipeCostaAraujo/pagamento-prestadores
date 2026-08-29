@@ -15,6 +15,14 @@ type Config struct {
 	Addr        string
 	CORSOrigins []string
 	Seed        bool
+	// FCMCredentials is the path to the Google service-account JSON that
+	// authorises sending push. Empty disables reminders entirely.
+	FCMCredentials string
+	// Timezone the household lives in. Reminder times and "the 5th" are
+	// interpreted here, never in the server's own zone.
+	Timezone string
+	// Day of month for the payment nudge.
+	PaymentReminderDay int
 	// TrustProxy makes the server believe X-Forwarded-For / X-Real-IP when
 	// identifying the client. Enable it only when a reverse proxy sits in
 	// front: otherwise any caller can forge the header and dodge login
@@ -37,7 +45,18 @@ func Load(envFiles ...string) (Config, error) {
 		Addr:        env("DIARIAS_ADDR", ":8080"),
 		Seed:        env("DIARIAS_SEED", "false") == "true",
 		TrustProxy:  env("DIARIAS_TRUST_PROXY", "false") == "true",
+
+		FCMCredentials: env("DIARIAS_FCM_CREDENTIALS", ""),
+		Timezone:       env("DIARIAS_TIMEZONE", "America/Sao_Paulo"),
 	}
+
+	day, err := strconv.Atoi(env("DIARIAS_PAYMENT_REMINDER_DAY", "5"))
+	if err != nil || day < 1 || day > 28 {
+		// Capped at 28 so the reminder exists in February too.
+		return Config{}, fmt.Errorf(
+			"DIARIAS_PAYMENT_REMINDER_DAY must be a day between 1 and 28")
+	}
+	cfg.PaymentReminderDay = day
 
 	for _, o := range strings.Split(env("DIARIAS_CORS_ORIGINS", "*"), ",") {
 		if o = strings.TrimSpace(o); o != "" {

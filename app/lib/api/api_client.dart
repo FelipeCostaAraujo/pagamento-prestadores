@@ -180,6 +180,22 @@ class ApiClient {
     return ((body as Map<String, dynamic>)['revoked'] as num?)?.toInt() ?? 0;
   }
 
+  /// Tells the server to send this device's reminders.
+  Future<void> registerDevice({
+    required String token,
+    required String platform,
+  }) async {
+    await _send(
+      'POST',
+      '/api/v1/devices',
+      body: {'token': token, 'platform': platform},
+    );
+  }
+
+  Future<void> unregisterDevice(String token) async {
+    await _send('DELETE', '/api/v1/devices', body: {'token': token});
+  }
+
   // ------------------------------------------------------------- providers --
 
   Future<List<Provider>> listProviders() async {
@@ -206,6 +222,8 @@ class ApiClient {
     String? name,
     int? defaultRateCents,
     String? phone,
+    List<int>? remindWeekdays,
+    String? remindAt,
   }) async {
     final body = await _send(
       'PATCH',
@@ -216,6 +234,8 @@ class ApiClient {
         'name': ?name,
         'default_rate_cents': ?defaultRateCents,
         'phone': ?phone,
+        'remind_weekdays': ?remindWeekdays,
+        'remind_at': ?remindAt,
       },
     );
     return Provider.fromJson(body as Map<String, dynamic>);

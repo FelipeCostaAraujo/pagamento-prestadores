@@ -44,6 +44,8 @@ func NewHandler(st *store.Store, cfg config.Config) http.Handler {
 	private.HandleFunc("GET /api/v1/auth/sessions", s.sessions)
 	private.HandleFunc("DELETE /api/v1/auth/sessions", s.revokeOtherSessions)
 	private.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.revokeSession)
+	private.HandleFunc("POST /api/v1/devices", s.registerDevice)
+	private.HandleFunc("DELETE /api/v1/devices", s.unregisterDevice)
 
 	private.HandleFunc("GET /api/v1/providers", s.listProviders)
 	private.HandleFunc("POST /api/v1/providers", s.createProvider)
@@ -98,6 +100,9 @@ type providerBody struct {
 	DefaultRateCents *int64  `json:"default_rate_cents"`
 	ColorIndex       *int    `json:"color_index"`
 	Phone            *string `json:"phone"`
+	// 0=Sunday..6=Saturday. An empty array clears the schedule.
+	RemindWeekdays *[]int  `json:"remind_weekdays"`
+	RemindAt       *string `json:"remind_at"`
 }
 
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +142,8 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		DefaultRateCents: body.DefaultRateCents,
 		ColorIndex:       body.ColorIndex,
 		Phone:            body.Phone,
+		RemindWeekdays:   body.RemindWeekdays,
+		RemindAt:         body.RemindAt,
 	})
 	if err != nil {
 		writeError(w, r, err)

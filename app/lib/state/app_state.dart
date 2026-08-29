@@ -553,6 +553,20 @@ class AppState extends ChangeNotifier {
     return _mutate(providerKey(id), () => api.updateProvider(id, phone: phone));
   }
 
+  /// Sets which weekdays this person is expected and at what time to be asked
+  /// about the day. An empty list means no routine.
+  Future<void> setProviderSchedule(
+    String id, {
+    List<int>? weekdays,
+    String? remindAt,
+  }) {
+    return _mutate(
+      providerKey(id),
+      () =>
+          api.updateProvider(id, remindWeekdays: weekdays, remindAt: remindAt),
+    );
+  }
+
   Future<void> setProviderRate(String id, int rateCents) {
     final current = providerById(id);
     if (current != null && current.defaultRateCents == rateCents) {

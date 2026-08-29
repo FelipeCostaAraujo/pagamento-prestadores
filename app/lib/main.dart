@@ -29,13 +29,14 @@ class _DiariasAppState extends State<DiariasApp> {
   late final ApiClient _api;
   late final AuthController _auth;
   late final AppState _state;
-  final _reminders = ReminderService();
+  late final ReminderService _reminders;
 
   @override
   void initState() {
     super.initState();
     _api = ApiClient();
     _auth = AuthController(api: _api);
+    _reminders = ReminderService(api: _api);
     _state = AppState(api: _api);
 
     _auth.addListener(_onAuthChanged);
@@ -44,8 +45,9 @@ class _DiariasAppState extends State<DiariasApp> {
     _state.addListener(_onStateChanged);
     // Checks for a stored token before deciding which screen to show.
     _auth.restore();
-    // Tops the pending reminders back up; a no-op when the user has them off.
-    _reminders.scheduleAll();
+    // Re-registers the push token, in case FCM rotated it while the app was
+    // closed. A no-op when the user has reminders off.
+    _reminders.refresh();
   }
 
   void _onStateChanged() {

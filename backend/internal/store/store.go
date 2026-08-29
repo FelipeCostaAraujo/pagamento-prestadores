@@ -23,12 +23,14 @@ type Store struct{ pool *pgxpool.Pool }
 
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-const providerCols = `id, name, default_rate_cents, color_index, position, phone, created_at, updated_at`
+const providerCols = `id, name, default_rate_cents, color_index, position, phone,
+	remind_weekdays, to_char(remind_at, 'HH24:MI'), created_at, updated_at`
 
 func scanProvider(row pgx.Row) (domain.Provider, error) {
 	var p domain.Provider
 	err := row.Scan(&p.ID, &p.Name, &p.DefaultRateCents, &p.ColorIndex,
-		&p.Position, &p.Phone, &p.CreatedAt, &p.UpdatedAt)
+		&p.Position, &p.Phone, &p.RemindWeekdays, &p.RemindAt,
+		&p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Provider{}, domain.ErrNotFound
 	}
@@ -144,6 +146,8 @@ type ProviderPatch struct {
 	DefaultRateCents *int64
 	ColorIndex       *int
 	Phone            *string
+	RemindWeekdays   *[]int
+	RemindAt         *string
 }
 
 func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPatch) (domain.Provider, error) {
@@ -154,8 +158,23 @@ func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPat
 		return domain.Provider{}, domain.Invalid("color_index must not be negative")
 	}
 	if patch.Name == nil && patch.DefaultRateCents == nil &&
-		patch.ColorIndex == nil && patch.Phone == nil {
+		patch.ColorIndex == nil && patch.Phone == nil &&
+		patch.RemindWeekdays == nil && patch.RemindAt == nil {
 		return s.GetProvider(ctx, id)
+	}
+	if patch.RemindWeekdays != nil {
+		for _, d := range *patch.RemindWeekdays {
+			if d < 0 || d > 6 {
+				return domain.Provider{}, domain.Invalid(
+					"dia da semana %d é inválido (0=domingo até 6=sábado)", d)
+			}
+		}
+	}
+	if patch.RemindAt != nil {
+		if _, err := time.Parse("15:04", *patch.RemindAt); err != nil {
+			return domain.Provider{}, domain.Invalid(
+				"horário %q deve estar no formato HH:MM", *patch.RemindAt)
+		}
 	}
 
 	var name *string
@@ -181,10 +200,13 @@ func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPat
 			name               = COALESCE($2, name),
 			default_rate_cents = COALESCE($3, default_rate_cents),
 			color_index        = COALESCE($4, color_index),
-			phone              = COALESCE($5, phone)
+			phone              = COALESCE($5, phone),
+			remind_weekdays    = COALESCE($6, remind_weekdays),
+			remind_at          = COALESCE($7::time, remind_at)
 		WHERE id = $1 AND archived_at IS NULL
 		RETURNING `+providerCols,
-		id, name, patch.DefaultRateCents, color, phone))
+		id, name, patch.DefaultRateCents, color, phone,
+		patch.RemindWeekdays, patch.RemindAt))
 }
 
 // ArchiveProvider soft-deletes a prestadora. Her worked days and payment

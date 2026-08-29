@@ -1,52 +1,68 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:timezone/data/latest_all.dart' as tz_data;
-import 'package:timezone/timezone.dart' as tz;
 
-import '../format.dart';
+import '../api/api_client.dart';
+import '../firebase/firebase_setup.dart';
 
-/// Schedules the end-of-month reminder to close and pay.
+/// Turns the household's push reminders on and off for this device.
 ///
-/// Local scheduling on purpose: the reminder is a fixed date the phone already
-/// knows, so it needs no server, no push credentials and no Firebase — and it
-/// fires even with the app closed and no network.
+/// The reminders themselves are decided by the server, not here: only it knows
+/// whether today was already recorded or whether last month is still open, and
+/// a reminder that nags about something already done is worse than none.
+///
+/// This class does the three things the phone must contribute: ask permission,
+/// create the Android channel the pushes are tagged with, and tell the API
+/// which device to reach.
 class ReminderService {
-  ReminderService({FlutterLocalNotificationsPlugin? plugin})
+  ReminderService({required this.api, FlutterLocalNotificationsPlugin? plugin})
     : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
 
+  final ApiClient api;
   final FlutterLocalNotificationsPlugin _plugin;
 
   static const _enabledKey = 'diarias.reminder_enabled';
-  static const _channelId = 'fechamento';
 
-  /// How many months ahead to schedule. The OS keeps pending alarms, so a
-  /// year covers a long stretch of the app never being opened; every launch
-  /// tops them back up.
-  static const _monthsAhead = 12;
-
-  /// Reminder time on the last day of the month.
-  static const _hour = 19;
+  /// Must match the `channel_id` the server sets on every push, or Android
+  /// silently drops the notification into a default channel the user cannot
+  /// tune separately.
+  static const channelId = 'fechamento';
 
   bool _ready = false;
+  String? _token;
 
   Future<void> _ensureReady() async {
     if (_ready) return;
-    // The plugin schedules in a named zone, so the database has to be loaded
-    // before any TZDateTime is built.
-    tz_data.initializeTimeZones();
     await _plugin.initialize(
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         iOS: DarwinInitializationSettings(
-          // Asked for explicitly in [requestPermission] instead, so the prompt
-          // appears when the user turns the reminder on rather than at launch.
+          // Asked for when the user turns reminders on, not at launch: a
+          // permission prompt before anyone has seen the app gets denied.
           requestAlertPermission: false,
           requestBadgePermission: false,
           requestSoundPermission: false,
         ),
       ),
     );
+
+    // Created up front so the first push has somewhere to land.
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(
+            const AndroidNotificationChannel(
+              channelId,
+              'Lembretes de fechamento',
+              description: 'Avisos para anotar a diária e para fechar o mês.',
+              importance: Importance.defaultImportance,
+            ),
+          );
+    } catch (e) {
+      debugPrint('createNotificationChannel failed: $e');
+    }
     _ready = true;
   }
 
@@ -55,112 +71,71 @@ class ReminderService {
     return prefs.getBool(_enabledKey) ?? false;
   }
 
-  /// Turns the reminder on or off, asking for permission the first time.
+  /// Turns reminders on or off for this device.
   ///
-  /// Returns whether it ended up enabled — the OS can refuse.
+  /// Returns whether they ended up on — the OS can refuse permission, and the
+  /// server can be unreachable.
   Future<bool> setEnabled(bool enabled) async {
-    await _ensureReady();
     final prefs = await SharedPreferences.getInstance();
 
     if (!enabled) {
-      await _plugin.cancelAll();
+      await _unregister();
       await prefs.setBool(_enabledKey, false);
       return false;
     }
 
-    if (!await requestPermission()) {
+    await _ensureReady();
+    if (!await FirebaseSetup.requestPushPermission()) {
+      await prefs.setBool(_enabledKey, false);
+      return false;
+    }
+    if (!await _register()) {
       await prefs.setBool(_enabledKey, false);
       return false;
     }
 
     await prefs.setBool(_enabledKey, true);
-    await scheduleAll();
     return true;
   }
 
-  Future<bool> requestPermission() async {
+  /// Re-registers on launch, so a token rotated by FCM while the app was closed
+  /// does not silently stop the reminders.
+  Future<void> refresh() async {
+    if (!await isEnabled()) return;
     await _ensureReady();
-    try {
-      final android = _plugin
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
-      if (android != null) {
-        return await android.requestNotificationsPermission() ?? false;
-      }
+    await _register();
+  }
 
-      final apple = _plugin
-          .resolvePlatformSpecificImplementation<
-            IOSFlutterLocalNotificationsPlugin
-          >();
-      if (apple != null) {
-        return await apple.requestPermissions(
-              alert: true,
-              badge: true,
-              sound: true,
-            ) ??
-            false;
-      }
-      // Desktop has no permission gate.
+  Future<bool> _register() async {
+    final token = await FirebaseSetup.messagingToken();
+    if (token == null || token.isEmpty) return false;
+    try {
+      await api.registerDevice(token: token, platform: _platform);
+      _token = token;
       return true;
-    } catch (e) {
-      debugPrint('ReminderService.requestPermission failed: $e');
+    } on ApiException catch (e) {
+      debugPrint('registerDevice failed: $e');
       return false;
     }
   }
 
-  /// Re-schedules the next year of reminders, replacing whatever was pending.
-  ///
-  /// Safe to call on every launch: ids are derived from year and month, so a
-  /// repeat schedule overwrites rather than duplicates.
-  Future<void> scheduleAll() async {
-    await _ensureReady();
-    if (!await isEnabled()) return;
-
+  Future<void> _unregister() async {
+    final token = _token ?? await FirebaseSetup.messagingToken();
+    if (token == null || token.isEmpty) return;
     try {
-      await _plugin.cancelAll();
-      final now = tz.TZDateTime.now(tz.local);
-
-      for (var i = 0; i < _monthsAhead; i++) {
-        final month = DateTime(now.year, now.month + i);
-        final when = lastDayOfMonth(month);
-        // Skip a date that has already passed this month.
-        if (!when.isAfter(now)) continue;
-
-        await _plugin.zonedSchedule(
-          id: month.year * 100 + month.month,
-          scheduledDate: when,
-          title: 'Fechamento de ${monthName(month.month)}',
-          body: 'Confira as diárias do mês e pague quem trabalhou.',
-          // Inexact on purpose: an exact alarm needs SCHEDULE_EXACT_ALARM,
-          // which Android treats as a privileged permission. A reminder that
-          // may land a few minutes late is worth not asking for that.
-          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-          notificationDetails: const NotificationDetails(
-            android: AndroidNotificationDetails(
-              _channelId,
-              'Fechamento do mês',
-              channelDescription:
-                  'Lembrete no último dia do mês para fechar e pagar.',
-              importance: Importance.defaultImportance,
-              priority: Priority.defaultPriority,
-            ),
-            iOS: DarwinNotificationDetails(),
-          ),
-        );
-      }
-    } catch (e) {
-      // A reminder that fails to schedule must never stop the app from opening.
-      debugPrint('ReminderService.scheduleAll failed: $e');
+      await api.unregisterDevice(token);
+      _token = null;
+    } on ApiException catch (e) {
+      // The local preference is still turned off; a token left behind stops
+      // working on its own once FCM sees the app is gone.
+      debugPrint('unregisterDevice failed: $e');
     }
   }
 
-  /// The last day of [month] at the reminder hour, in the device's zone.
-  ///
-  /// Day zero of the next month is the last day of this one, which gets
-  /// February and leap years right with no special cases.
-  static tz.TZDateTime lastDayOfMonth(DateTime month) {
-    final lastDay = DateTime(month.year, month.month + 1, 0).day;
-    return tz.TZDateTime(tz.local, month.year, month.month, lastDay, _hour);
-  }
+  static String get _platform => switch (defaultTargetPlatform) {
+    TargetPlatform.android => 'android',
+    TargetPlatform.iOS => 'ios',
+    TargetPlatform.macOS => 'macos',
+    _ => 'outro',
+  };
 }

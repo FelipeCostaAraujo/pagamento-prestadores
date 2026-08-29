@@ -373,3 +373,55 @@ func (s *Server) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
 		"username", user.Username, "count", revoked)
 	writeJSON(w, http.StatusOK, map[string]int64{"revoked": revoked})
 }
+
+type deviceBody struct {
+	Token    string `json:"token"`
+	Platform string `json:"platform"`
+}
+
+// registerDevice records the caller's push token.
+//
+// Called after every sign-in and whenever FCM rotates the token, so it upserts
+// rather than erroring on a repeat.
+func (s *Server) registerDevice(w http.ResponseWriter, r *http.Request) {
+	user, ok := userFrom(r.Context())
+	if !ok {
+		unauthorized(w, "credenciais necessárias")
+		return
+	}
+
+	body, err := decode[deviceBody](r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if body.Token == "" {
+		writeError(w, r, domain.Invalid("token is required"))
+		return
+	}
+
+	if err := s.store.RegisterDevice(
+		r.Context(), user.ID, body.Token, body.Platform); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// unregisterDevice stops reminders reaching this install, on sign-out.
+func (s *Server) unregisterDevice(w http.ResponseWriter, r *http.Request) {
+	body, err := decode[deviceBody](r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if body.Token == "" {
+		writeError(w, r, domain.Invalid("token is required"))
+		return
+	}
+	if err := s.store.UnregisterDevice(r.Context(), body.Token); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

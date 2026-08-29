@@ -25,3 +25,6 @@
 /app/android/key.properties
 *.jks
 *.keystore
+
+# Credencial do Firebase para envio de push — nunca versionar
+/secrets/

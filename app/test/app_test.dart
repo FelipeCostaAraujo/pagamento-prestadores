@@ -215,9 +215,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Valor padrão da diária'), findsNWidgets(2));
-    expect(find.text('+ Nova prestadora'), findsOneWidget);
     // Rates render inside the money field, without the R$ prefix.
     expect(find.text('180,00'), findsNWidgets(2));
+
+    // The cards now carry a phone and a weekly schedule, so the button sits
+    // below the fold on a real phone.
+    await scrollTo(tester, find.text('+ Nova prestadora'));
+    expect(find.text('+ Nova prestadora'), findsOneWidget);
   });
 
   testWidgets('tapping a day opens the "Quem trabalhou?" sheet', (
