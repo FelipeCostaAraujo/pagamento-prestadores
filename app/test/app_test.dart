@@ -8,6 +8,7 @@ import 'package:diarias/theme/app_theme.dart';
 import 'package:diarias/widgets/ds_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -118,10 +119,7 @@ Future<AppState> pumpApp(WidgetTester tester, http.Client client) async {
   addTearDown(tester.view.reset);
 
   final state = AppState(
-    api: ApiClient(
-      baseUrl: Uri.parse('http://test.local'),
-      httpClient: client,
-    ),
+    api: ApiClient(baseUrl: Uri.parse('http://test.local'), httpClient: client),
     today: _today,
   );
   addTearDown(state.dispose);
@@ -148,6 +146,11 @@ Future<void> scrollTo(WidgetTester tester, Finder finder) async {
 }
 
 void main() {
+  // AppState persists its offline cache through SharedPreferences. Without a
+  // mock the platform channel never answers and the test hangs rather than
+  // failing, so this has to come before any AppState is built.
+  setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
+
   testWidgets('calendar tab shows the month and the outstanding total', (
     tester,
   ) async {
@@ -228,7 +231,7 @@ void main() {
     expect(find.text('Quem trabalhou?'), findsOneWidget);
     expect(find.text('Quarta, 5 de agosto'), findsOneWidget);
     // Cleide worked that day; Marina did not, so she shows her default rate.
-    expect(find.text('Trabalhou neste dia'), findsOneWidget);
+    expect(find.text('Trabalhou o dia inteiro'), findsOneWidget);
     expect(find.text(r'Valor padrão R$ 180,00'), findsOneWidget);
     expect(find.text('Salvar dia'), findsOneWidget);
   });
@@ -269,7 +272,7 @@ void main() {
 
     // Cleide already worked, so tapping her row removes the day.
     requests.clear();
-    await tester.tap(find.text('Trabalhou neste dia'));
+    await tester.tap(find.text('Trabalhou o dia inteiro'));
     await tester.pumpAndSettle();
     expect(requests, contains('DELETE /api/v1/entries'));
   });
@@ -307,7 +310,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Enviar fechamento'), findsOneWidget);
-    expect(find.text('Para Cleide Ramos, por WhatsApp'), findsOneWidget);
+    // No phone on file for her, so the dialog says so and offers the copy.
+    expect(
+      find.text('Para Cleide Ramos — sem número cadastrado'),
+      findsOneWidget,
+    );
+    expect(find.text('Copiar mensagem'), findsOneWidget);
     expect(
       find.textContaining('Oi, Cleide! Fechamento de agosto:'),
       findsOneWidget,
@@ -323,14 +331,10 @@ void main() {
     // header must stay a fixed height regardless of the amount, so the body
     // below it does not shift.
     await pumpApp(tester, _fakeApi(outstandingCents: 15000));
-    final smallTotalBodyTop = tester
-        .getTopLeft(find.byType(DsCard).first)
-        .dy;
+    final smallTotalBodyTop = tester.getTopLeft(find.byType(DsCard).first).dy;
 
     await pumpApp(tester, _fakeApi(outstandingCents: 172000000));
-    final largeTotalBodyTop = tester
-        .getTopLeft(find.byType(DsCard).first)
-        .dy;
+    final largeTotalBodyTop = tester.getTopLeft(find.byType(DsCard).first).dy;
 
     expect(find.text(r'R$ 1.720.000,00'), findsOneWidget);
     expect(largeTotalBodyTop, smallTotalBodyTop);
@@ -342,10 +346,7 @@ void main() {
     // The design's chips are inline-flex: a pill must not stretch to the full
     // row width.
     final chip = tester.getSize(
-      find.ancestor(
-        of: find.text('Marina'),
-        matching: find.byType(DsPill),
-      ),
+      find.ancestor(of: find.text('Marina'), matching: find.byType(DsPill)),
     );
     expect(chip.width, lessThan(200));
     expect(chip.height, 30);

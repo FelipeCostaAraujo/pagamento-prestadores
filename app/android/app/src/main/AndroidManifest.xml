@@ -3,6 +3,12 @@
          debug and profile manifests, so a release build has no network at all
          without it here. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Android 13+ asks the user before an app may post notifications. The
+         end-of-month reminder is scheduled locally, so no push service is
+         involved. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Re-schedule pending reminders after a reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
         android:label="Diárias"
@@ -46,6 +52,19 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11+ hides other apps unless they are declared here. Without
+             this, launching the wa.me link silently fails and the dialog would
+             always fall back to the clipboard. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
+        </intent>
+        <!-- Lets canLaunchUrl see WhatsApp's own scheme, so the hand-off goes
+             straight to the app instead of bouncing through a browser. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="whatsapp"/>
         </intent>
     </queries>
 </manifest>

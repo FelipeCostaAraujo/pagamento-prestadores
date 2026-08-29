@@ -267,11 +267,14 @@ func (s *Store) RefreshSession(ctx context.Context, refreshToken string) (domain
 	session.Token = token
 	session.RefreshToken = newRefreshToken
 
+	presented := auth.HashToken(refreshToken)
+
 	err = s.pool.QueryRow(ctx, `
 		UPDATE sessions AS s
 		SET token_hash = $2,
 			expires_at = LEAST($3, s.refresh_expires_at),
 			refresh_token_hash = $4,
+			previous_refresh_token_hash = $1,
 			last_seen_at = now()
 		FROM users AS u
 		WHERE s.refresh_token_hash = $1
@@ -280,19 +283,91 @@ func (s *Store) RefreshSession(ctx context.Context, refreshToken string) (domain
 		  AND u.disabled_at IS NULL
 		RETURNING s.expires_at, s.refresh_expires_at,
 			u.id, u.username, u.disabled_at, u.created_at`,
-		auth.HashToken(refreshToken), tokenDigest,
+		presented, tokenDigest,
 		time.Now().Add(auth.AccessTokenTTL), refreshDigest,
 	).Scan(
 		&session.ExpiresAt, &session.RefreshExpiresAt,
 		&user.ID, &user.Username, &user.DisabledAt, &user.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Nothing rotated. Before reporting a plain failure, find out whether
+		// this token was one we already consumed: that means a copy of it
+		// exists somewhere it should not.
+		if username, revoked, rerr := s.revokeOnRefreshReuse(ctx, presented); rerr != nil {
+			return domain.Session{}, domain.User{}, rerr
+		} else if revoked > 0 {
+			return domain.Session{}, domain.User{}, ReplayedRefreshTokenError{
+				Username: username, RevokedSessions: revoked,
+			}
+		}
 		return domain.Session{}, domain.User{}, ErrInvalidCredentials
 	}
 	if err != nil {
 		return domain.Session{}, domain.User{}, fmt.Errorf("refresh session: %w", err)
 	}
 	return session, user, nil
+}
+
+// ReplayedRefreshTokenError reports that an already-consumed refresh token was
+// presented again, and that the user's sessions were revoked as a result.
+//
+// It is a distinct type so the HTTP layer can log it loudly. The response sent
+// to the caller stays the same generic 401: telling an attacker that their
+// replay was noticed helps only the attacker.
+type ReplayedRefreshTokenError struct {
+	Username        string
+	RevokedSessions int64
+}
+
+func (e ReplayedRefreshTokenError) Error() string {
+	return fmt.Sprintf("refresh token replay for %q; revoked %d session(s)",
+		e.Username, e.RevokedSessions)
+}
+
+// Is lets errors.Is treat a replay as invalid credentials, so existing callers
+// that only care about "rejected" keep working.
+func (e ReplayedRefreshTokenError) Is(target error) bool {
+	return target == ErrInvalidCredentials
+}
+
+// revokeOnRefreshReuse deletes every session belonging to the owner of a
+// replayed refresh token.
+//
+// Only the immediately-previous token is remembered, which is what a real
+// theft looks like: the thief and the victim both hold the same token, one
+// rotates, the other replays. Returns the owner and how many sessions went.
+func (s *Store) revokeOnRefreshReuse(ctx context.Context, presented []byte) (string, int64, error) {
+	var (
+		username string
+		revoked  int64
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var userID string
+		err := tx.QueryRow(ctx, `
+			SELECT s.user_id, u.username
+			FROM sessions AS s
+			JOIN users AS u ON u.id = s.user_id
+			WHERE s.previous_refresh_token_hash = $1
+			LIMIT 1`, presented).Scan(&userID, &username)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Just an unknown token — expired, revoked, or a guess.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("look up replayed refresh token: %w", err)
+		}
+
+		tag, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID)
+		if err != nil {
+			return fmt.Errorf("revoke sessions after replay: %w", err)
+		}
+		revoked = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return username, revoked, nil
 }
 
 // UserForToken resolves a bearer token to its user, or ErrInvalidCredentials.
@@ -360,4 +435,62 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("count users: %w", err)
 	}
 	return n, nil
+}
+
+// ListSessions returns the user's signed-in devices, newest activity first.
+//
+// The session holding currentToken is flagged rather than hidden: seeing "este
+// aparelho" in the list is what makes the others legible.
+func (s *Store) ListSessions(ctx context.Context, userID, currentToken string) ([]domain.SessionInfo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_agent, created_at, last_seen_at,
+		       COALESCE(refresh_expires_at, expires_at),
+		       token_hash = $2
+		FROM sessions
+		WHERE user_id = $1
+		ORDER BY last_seen_at DESC`,
+		userID, auth.HashToken(currentToken))
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]domain.SessionInfo, 0, 4)
+	for rows.Next() {
+		var info domain.SessionInfo
+		if err := rows.Scan(&info.ID, &info.UserAgent, &info.CreatedAt,
+			&info.LastSeenAt, &info.ExpiresAt, &info.Current); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		sessions = append(sessions, info)
+	}
+	return sessions, rows.Err()
+}
+
+// DeleteSessionByID revokes one device.
+//
+// Scoped to userID so knowing another account's session id is not enough to
+// sign it out.
+func (s *Store) DeleteSessionByID(ctx context.Context, userID, sessionID string) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM sessions WHERE id = $1 AND user_id = $2`, sessionID, userID)
+	if err != nil {
+		return fmt.Errorf("delete session by id: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// DeleteOtherSessions signs out every device except the one asking. This is the
+// button to reach for when a phone is lost.
+func (s *Store) DeleteOtherSessions(ctx context.Context, userID, currentToken string) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`,
+		userID, auth.HashToken(currentToken))
+	if err != nil {
+		return 0, fmt.Errorf("delete other sessions: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

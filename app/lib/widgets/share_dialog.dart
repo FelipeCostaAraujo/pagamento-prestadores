@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../format.dart';
 import '../models/models.dart';
@@ -40,6 +41,51 @@ class _ShareDialog extends StatelessWidget {
   final AppState state;
   final ProviderClosing closing;
 
+  /// Opens the WhatsApp conversation with the message ready to send.
+  ///
+  /// Deliberately stops at "ready to send": the app composes, the user presses
+  /// send. Nothing leaves the phone without her seeing it.
+  ///
+  /// Falls back to the clipboard whenever the hand-off cannot happen — no
+  /// number, an unusable number, or no WhatsApp installed — so the button
+  /// always accomplishes something.
+  Future<void> _send(BuildContext context, String message) async {
+    final number = closing.provider.whatsappNumber;
+    final firstName = closing.provider.firstName;
+
+    if (number != null) {
+      final text = Uri.encodeComponent(message);
+      // The app scheme first, then the web link. Both end in the same place,
+      // but wa.me on a phone whose default browser claims https opens the
+      // browser and makes the user tap through — verified on the S20.
+      final targets = [
+        Uri.parse('whatsapp://send?phone=$number&text=$text'),
+        Uri.parse('https://wa.me/$number?text=$text'),
+      ];
+
+      for (final uri in targets) {
+        try {
+          if (await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+            if (!context.mounted) return;
+            Navigator.of(context).pop();
+            return;
+          }
+        } catch (_) {
+          // Not installed, or no handler — try the next one.
+        }
+      }
+    }
+
+    await Clipboard.setData(ClipboardData(text: message));
+    if (!context.mounted) return;
+    Navigator.of(context).pop();
+    state.showToast(
+      number == null
+          ? 'Mensagem de $firstName copiada'
+          : 'Não consegui abrir o WhatsApp; mensagem copiada',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final message = closingMessage(closing, state.month);
@@ -62,7 +108,9 @@ class _ShareDialog extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              'Para ${closing.provider.displayName}, por WhatsApp',
+              closing.provider.hasPhone
+                  ? 'Para ${closing.provider.displayName} · ${closing.provider.phone}'
+                  : 'Para ${closing.provider.displayName} — sem número cadastrado',
               style: DsText.body(
                 size: 13,
                 height: 1.4,
@@ -92,16 +140,13 @@ class _ShareDialog extends StatelessWidget {
               children: [
                 Expanded(
                   child: DsButton(
-                    label: 'Copiar mensagem',
+                    // Without a number there is nothing to open, so the button
+                    // says what it will actually do instead of failing later.
+                    label: closing.provider.hasPhone
+                        ? 'Abrir no WhatsApp'
+                        : 'Copiar mensagem',
                     block: true,
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: message));
-                      if (!context.mounted) return;
-                      Navigator.of(context).pop();
-                      state.showToast(
-                        'Mensagem de ${closing.provider.firstName} copiada',
-                      );
-                    },
+                    onPressed: () => _send(context, message),
                   ),
                 ),
                 const SizedBox(width: DsSpace.s2),
@@ -112,6 +157,19 @@ class _ShareDialog extends StatelessWidget {
                 ),
               ],
             ),
+            if (!closing.provider.hasPhone) ...[
+              const SizedBox(height: DsSpace.s3),
+              Text(
+                'Cadastre o WhatsApp dela na aba Prestadoras para abrir a '
+                'conversa direto.',
+                textAlign: TextAlign.center,
+                style: DsText.body(
+                  size: 12,
+                  height: 1.4,
+                  color: DsColors.textMuted,
+                ),
+              ),
+            ],
           ],
         ),
       ),

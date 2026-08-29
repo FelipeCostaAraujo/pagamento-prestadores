@@ -49,9 +49,19 @@ class _ClosingCard extends StatelessWidget {
 
   String get _countLabel {
     final month = monthName(state.month);
-    return closing.entryCount == 1
+    final diarias = closing.entryCount == 1
         ? '1 diária em $month'
         : '${closing.entryCount} diárias em $month';
+
+    final notes = <String>[
+      if (closing.halfCount > 0)
+        closing.halfCount == 1 ? '1 meia' : '${closing.halfCount} meias',
+      if (closing.absenceCount > 0)
+        closing.absenceCount == 1
+            ? '1 falta'
+            : '${closing.absenceCount} faltas',
+    ];
+    return notes.isEmpty ? diarias : '$diarias · ${notes.join(', ')}';
   }
 
   @override
@@ -223,9 +233,29 @@ class _DayChip extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           Text(
-            formatMoney(day.valueCents),
-            style: DsText.body(size: 12, height: 1, color: DsColors.textBody),
+            day.kind == EntryKind.absence
+                ? 'falta'
+                : formatMoney(day.valueCents),
+            style: DsText.body(
+              size: 12,
+              height: 1,
+              color: day.kind == EntryKind.absence
+                  ? DsColors.textMuted
+                  : DsColors.textBody,
+            ),
           ),
+          if (day.kind == EntryKind.half) ...[
+            const SizedBox(width: 4),
+            Text(
+              '½',
+              style: DsText.body(
+                size: 12,
+                weight: DsWeight.bold,
+                height: 1,
+                color: DsColors.textMuted,
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -57,11 +57,13 @@ class AuthController extends ChangeNotifier {
       api.clearSession();
       _set(AuthStatus.loggedOut);
     } on ApiException {
-      // The server is unreachable. Keep the token — it may well still be good —
-      // and let the user retry from the login screen rather than silently
-      // discarding a valid session because the wifi was down.
-      api.clearSession();
-      _set(AuthStatus.loggedOut);
+      // The server is unreachable, so the token could not be checked — but a
+      // stored credential plus the cached month is far more useful than a login
+      // screen the user cannot get past while the wifi is down. The session is
+      // kept optimistically; the first 401 once the network returns will refresh
+      // it or sign out properly.
+      _user = null;
+      _set(AuthStatus.loggedIn);
     }
   }
 
@@ -116,6 +118,22 @@ class AuthController extends ChangeNotifier {
       _notice = null;
       _busy = false;
       _set(AuthStatus.loggedOut);
+    }
+  }
+
+  /// Fills in who is signed in, when a session was restored offline and the
+  /// server could not be asked at the time.
+  ///
+  /// Safe to call repeatedly: it does nothing once the user is known, and a
+  /// failure leaves the session alone rather than signing anyone out.
+  Future<void> ensureUserLoaded() async {
+    if (_user != null || _status != AuthStatus.loggedIn) return;
+    try {
+      _user = await api.me();
+      notifyListeners();
+    } on ApiException {
+      // Still unreachable, or the session died — the 401 path handles the
+      // latter on its own.
     }
   }
 

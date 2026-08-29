@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:diarias/api/api_client.dart';
 import 'package:diarias/state/app_state.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -124,6 +125,11 @@ AppState _state(_SlowApi api) => AppState(
 );
 
 void main() {
+  // AppState persists its offline cache through SharedPreferences. Without a
+  // mock the platform channel never answers and the test hangs rather than
+  // failing, so this has to come before any AppState is built.
+  setUp(() => SharedPreferences.setMockInitialValues(<String, Object>{}));
+
   group('double-tap guard', () {
     test('repeated taps on "+ Nova prestadora" create only one', () async {
       final api = _SlowApi();

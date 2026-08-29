@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import '../api/api_client.dart';
 import '../models/models.dart';
+import '../offline/offline_store.dart';
 
 enum AppTab { calendar, closing, people }
 
@@ -15,14 +16,16 @@ enum WeekStart { sunday, monday }
 /// prestadora list and the derived closing, and it reloads from the API after
 /// every mutation so what is on screen always matches what is stored.
 class AppState extends ChangeNotifier {
-  AppState({required this.api, DateTime? today})
-    : _today = dayOnly(today ?? DateTime.now()) {
+  AppState({required this.api, DateTime? today, OfflineStore? offline})
+    : _today = dayOnly(today ?? DateTime.now()),
+      _offline = offline ?? OfflineStore() {
     _year = _today.year;
     _month = _today.month;
   }
 
   final ApiClient api;
   final DateTime _today;
+  final OfflineStore _offline;
 
   DateTime get today => _today;
 
@@ -70,6 +73,19 @@ class AppState extends ChangeNotifier {
   String? _toast;
   String? get toast => _toast;
 
+  /// True when the screen is showing cached data because the server could not
+  /// be reached. The month still works — edits queue up and replay later.
+  bool _offlineMode = false;
+  bool get offlineMode => _offlineMode;
+
+  /// When the cached data on screen was fetched.
+  DateTime? _cachedAt;
+  DateTime? get cachedAt => _cachedAt;
+
+  /// Edits made offline that the server has not seen yet.
+  int _queuedWrites = 0;
+  int get queuedWrites => _queuedWrites;
+
   /// Actions currently in flight, by key.
   ///
   /// Two jobs: it drives the per-button spinners, and it makes a second tap on
@@ -100,6 +116,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Anything written while offline goes first, so the fetch below reflects
+      // it instead of overwriting it with stale server state.
+      await _flushQueue();
+
       // The three calls are independent; running them together keeps the
       // month switch to a single round-trip's latency.
       final results = await Future.wait([
@@ -107,17 +127,100 @@ class AppState extends ChangeNotifier {
         api.monthClosing(year: _year, month: _month),
         api.listEntries(year: _year, month: _month),
       ]);
-      _providers = results[0] as List<Provider>;
-      _closing = results[1] as MonthClosing;
-      _entriesByDay = _groupByDay(results[2] as List<WorkEntry>);
+      final providers = results[0] as List<Provider>;
+      final closing = results[1] as MonthClosing;
+      final entries = results[2] as List<WorkEntry>;
+
+      _providers = providers;
+      _closing = closing;
+      _entriesByDay = _groupByDay(entries);
       _error = null;
+      _offlineMode = false;
+      _cachedAt = null;
+
+      await _offline.saveMonth(
+        year: _year,
+        month: _month,
+        providers: providers,
+        entries: entries,
+        closing: closing,
+      );
     } on ApiException catch (e) {
-      _error = e.message;
+      // A rejected request is a real error; an unreachable server is not, as
+      // long as this month was seen before.
+      if (e.isNetwork && await _loadFromCache()) {
+        _error = null;
+      } else {
+        _error = e.message;
+      }
     } finally {
       _loading = false;
       _initialLoadDone = true;
       notifyListeners();
     }
+  }
+
+  /// Falls back to the last copy of this month that reached the phone.
+  Future<bool> _loadFromCache() async {
+    final cached = await _offline.readMonth(_year, _month);
+    if (cached == null) return false;
+
+    _providers = cached.providers;
+    _closing = cached.closing;
+    _entriesByDay = _groupByDay(cached.entries);
+    _cachedAt = cached.savedAt;
+    _offlineMode = true;
+
+    // Re-apply anything still queued, so the screen shows what the user did
+    // rather than what the server last confirmed.
+    for (final write in await _offline.readQueue()) {
+      if (write.op == 'delete') {
+        _setEntryLocally(write.providerId, write.date, null);
+      } else {
+        _setEntryLocally(
+          write.providerId,
+          write.date,
+          _optimisticEntry(write.providerId, write.date, write.kind),
+        );
+      }
+    }
+    _queuedWrites = (await _offline.readQueue()).length;
+    return true;
+  }
+
+  /// Replays queued writes in order. Anything that fails stays queued.
+  Future<void> _flushQueue() async {
+    final queue = await _offline.readQueue();
+    if (queue.isEmpty) {
+      _queuedWrites = 0;
+      return;
+    }
+
+    final done = <PendingWrite>[];
+    for (final write in queue) {
+      try {
+        if (write.op == 'delete') {
+          await api.deleteEntry(providerId: write.providerId, date: write.date);
+        } else {
+          await api.upsertEntry(
+            providerId: write.providerId,
+            date: write.date,
+            kind: write.kind,
+            valueCents: write.valueCents,
+          );
+        }
+        done.add(write);
+      } on ApiException catch (e) {
+        if (e.isNetwork) break; // Still offline; keep the rest for later.
+        // The server refused this one — dropping it stops a bad write from
+        // blocking the queue forever.
+        done.add(write);
+        showToast('Um lançamento offline foi recusado: ${e.message}');
+      }
+    }
+
+    if (done.isNotEmpty) await _offline.removeReplayed(done);
+    _queuedWrites = (await _offline.readQueue()).length;
   }
 
   /// Drops everything loaded for the previous session.
@@ -135,6 +238,8 @@ class AppState extends ChangeNotifier {
     _tab = AppTab.calendar;
     _year = _today.year;
     _month = _today.month;
+    _offlineMode = false;
+    _cachedAt = null;
     notifyListeners();
   }
 
@@ -170,6 +275,9 @@ class AppState extends ChangeNotifier {
     String? successToast,
     Future<void> Function()? refresh,
     VoidCallback? rollback,
+    // Set for day edits, which can be replayed later. Anything without one
+    // needs the server now and rolls back instead.
+    PendingWrite? queueWhenOffline,
   }) async {
     if (!_pending.add(key)) return;
     notifyListeners();
@@ -179,8 +287,17 @@ class AppState extends ChangeNotifier {
       await (refresh ?? load)();
       if (successToast != null) showToast(successToast);
     } on ApiException catch (e) {
-      rollback?.call();
-      showToast(e.message);
+      if (e.isNetwork && queueWhenOffline != null) {
+        // The optimistic change stays on screen; the write waits for a
+        // connection instead of being thrown away.
+        final queue = await _offline.enqueue(queueWhenOffline);
+        _queuedWrites = queue.length;
+        _offlineMode = true;
+        showToast('Sem conexão — será salvo quando voltar');
+      } else {
+        rollback?.call();
+        showToast(e.message);
+      }
     } finally {
       _pending.remove(key);
       notifyListeners();
@@ -306,13 +423,7 @@ class AppState extends ChangeNotifier {
       date,
       existing != null
           ? null
-          : WorkEntry(
-              // Replaced by the server's row on the refresh that follows.
-              id: 'pendente:$providerId:${dateKey(date)}',
-              providerId: providerId,
-              date: dayOnly(date),
-              valueCents: providerById(providerId)?.defaultRateCents ?? 0,
-            ),
+          : _optimisticEntry(providerId, date, EntryKind.full),
     );
     notifyListeners();
 
@@ -327,6 +438,58 @@ class AppState extends ChangeNotifier {
       },
       refresh: _refreshMonth,
       rollback: () => _entriesByDay = snapshot,
+      queueWhenOffline: PendingWrite(
+        op: existing != null ? 'delete' : 'upsert',
+        providerId: providerId,
+        date: dayOnly(date),
+      ),
+    );
+  }
+
+  /// Changes a marked day between integral, meia and falta.
+  ///
+  /// The value follows the kind unless the user has already overridden it, so
+  /// switching to "meia" halves the amount rather than leaving a full day's
+  /// price on a half day.
+  Future<void> setEntryKind(String providerId, DateTime date, EntryKind kind) {
+    final key = entryKey(providerId, date);
+    if (isPending(key)) return Future.value();
+
+    final existing = entryFor(providerId, date);
+    if (existing != null && existing.kind == kind) return Future.value();
+
+    final snapshot = _entriesByDay;
+    _setEntryLocally(
+      providerId,
+      date,
+      _optimisticEntry(providerId, date, kind),
+    );
+    notifyListeners();
+
+    return _mutate(
+      key,
+      () => api.upsertEntry(providerId: providerId, date: date, kind: kind),
+      refresh: _refreshMonth,
+      rollback: () => _entriesByDay = snapshot,
+      queueWhenOffline: PendingWrite(
+        op: 'upsert',
+        providerId: providerId,
+        date: dayOnly(date),
+        kind: kind,
+      ),
+    );
+  }
+
+  /// Builds the row to show while the server confirms. It applies the same rule
+  /// the backend does, so the optimistic value matches what comes back.
+  WorkEntry _optimisticEntry(String providerId, DateTime date, EntryKind kind) {
+    final rate = providerById(providerId)?.defaultRateCents ?? 0;
+    return WorkEntry(
+      id: 'pendente:$providerId:${dateKey(date)}',
+      providerId: providerId,
+      date: dayOnly(date),
+      valueCents: kind.defaultValue(rate),
+      kind: kind,
     );
   }
 
@@ -347,6 +510,7 @@ class AppState extends ChangeNotifier {
           providerId: providerId,
           date: existing.date,
           valueCents: valueCents,
+          kind: existing.kind,
         ),
       );
       notifyListeners();
@@ -357,10 +521,18 @@ class AppState extends ChangeNotifier {
       () => api.upsertEntry(
         providerId: providerId,
         date: date,
+        kind: existing?.kind ?? EntryKind.full,
         valueCents: valueCents,
       ),
       refresh: _refreshMonth,
       rollback: () => _entriesByDay = snapshot,
+      queueWhenOffline: PendingWrite(
+        op: 'upsert',
+        providerId: providerId,
+        date: dayOnly(date),
+        kind: existing?.kind ?? EntryKind.full,
+        valueCents: valueCents,
+      ),
     );
   }
 
@@ -373,6 +545,12 @@ class AppState extends ChangeNotifier {
     final current = providerById(id);
     if (current != null && current.name == name) return Future.value();
     return _mutate(providerKey(id), () => api.updateProvider(id, name: name));
+  }
+
+  Future<void> setProviderPhone(String id, String phone) {
+    final current = providerById(id);
+    if (current != null && current.phone == phone) return Future.value();
+    return _mutate(providerKey(id), () => api.updateProvider(id, phone: phone));
   }
 
   Future<void> setProviderRate(String id, int rateCents) {

@@ -82,41 +82,115 @@ type Session struct {
 	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
 }
 
+// SessionInfo describes one signed-in device, for the account screen.
+//
+// It deliberately carries no credential: the id is an opaque handle used only
+// to revoke, and the token digests never leave the server.
+type SessionInfo struct {
+	ID string `json:"id"`
+	// Free-form client hint, e.g. "Diárias Android". Never trusted for
+	// anything but display.
+	UserAgent  string    `json:"user_agent"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	// True for the device making the request, so the UI can label it and
+	// refuse to revoke it by accident.
+	Current bool `json:"current"`
+}
+
 // Provider is a prestadora: a person who works day rates.
 type Provider struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	DefaultRateCents int64     `json:"default_rate_cents"`
-	ColorIndex       int       `json:"color_index"`
-	Position         int       `json:"position"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	DefaultRateCents int64  `json:"default_rate_cents"`
+	ColorIndex       int    `json:"color_index"`
+	Position         int    `json:"position"`
+	// As typed. Empty means the closing cannot be sent to her directly.
+	Phone     string    `json:"phone"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// EntryKind distinguishes a full day from a half day and from an absence.
+//
+// An absence is deliberately a record rather than the lack of one: "she was
+// expected and did not come" is different information from "nothing was ever
+// entered for that day".
+type EntryKind string
+
+const (
+	EntryFull    EntryKind = "full"
+	EntryHalf    EntryKind = "half"
+	EntryAbsence EntryKind = "absence"
+)
+
+func (k EntryKind) Valid() bool {
+	switch k {
+	case EntryFull, EntryHalf, EntryAbsence:
+		return true
+	}
+	return false
+}
+
+// Billable reports whether the day is owed money.
+func (k EntryKind) Billable() bool { return k != EntryAbsence }
+
+// DefaultValue returns what a day of this kind costs, given the prestadora's
+// rate. A half day is half the rate, rounded to the cent; the value stays
+// editable per day afterwards.
+func (k EntryKind) DefaultValue(rateCents int64) int64 {
+	switch k {
+	case EntryHalf:
+		return rateCents / 2
+	case EntryAbsence:
+		return 0
+	default:
+		return rateCents
+	}
+}
+
+func ParseEntryKind(value string) (EntryKind, error) {
+	if value == "" {
+		return EntryFull, nil
+	}
+	kind := EntryKind(value)
+	if !kind.Valid() {
+		return "", Invalid("kind %q must be one of full, half, absence", value)
+	}
+	return kind, nil
 }
 
 // WorkEntry is one day a prestadora worked, at the value agreed for that day.
 type WorkEntry struct {
-	ID         string `json:"id"`
-	ProviderID string `json:"provider_id"`
-	Date       Date   `json:"date"`
-	ValueCents int64  `json:"value_cents"`
+	ID         string    `json:"id"`
+	ProviderID string    `json:"provider_id"`
+	Date       Date      `json:"date"`
+	ValueCents int64     `json:"value_cents"`
+	Kind       EntryKind `json:"kind"`
 }
 
 // ProviderClosing is one prestadora's month: what she worked and whether it
 // has been paid.
 type ProviderClosing struct {
-	Provider   Provider     `json:"provider"`
-	EntryCount int          `json:"entry_count"`
-	TotalCents int64        `json:"total_cents"`
-	Days       []ClosingDay `json:"days"`
-	Paid       bool         `json:"paid"`
+	Provider Provider `json:"provider"`
+	// EntryCount counts days actually worked — full and half. Absences are
+	// reported separately so "3 diárias" never silently includes a no-show.
+	EntryCount   int          `json:"entry_count"`
+	HalfCount    int          `json:"half_count"`
+	AbsenceCount int          `json:"absence_count"`
+	TotalCents   int64        `json:"total_cents"`
+	Days         []ClosingDay `json:"days"`
+	Paid         bool         `json:"paid"`
 	// Set only when Paid is true.
 	PaidAt          *time.Time `json:"paid_at,omitempty"`
 	PaidAmountCents *int64     `json:"paid_amount_cents,omitempty"`
 }
 
 type ClosingDay struct {
-	Date       Date  `json:"date"`
-	ValueCents int64 `json:"value_cents"`
+	Date       Date      `json:"date"`
+	ValueCents int64     `json:"value_cents"`
+	Kind       EntryKind `json:"kind"`
 }
 
 // MonthClosing is the payload behind the Fechamento screen.

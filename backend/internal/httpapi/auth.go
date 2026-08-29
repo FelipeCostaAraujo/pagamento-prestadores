@@ -80,6 +80,38 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 	})
 }
 
+// guardCredential refuses a request when any of its throttle keys is locked
+// out, and reports whether the caller may proceed.
+//
+// Every endpoint that accepts a secret goes through this, not just login: an
+// unthrottled credential endpoint is free, unauthenticated work for anyone who
+// finds it.
+func (s *Server) guardCredential(w http.ResponseWriter, keys ...string) bool {
+	for _, key := range keys {
+		if ok, retryIn := s.logins.allow(key); !ok {
+			w.Header().Set("Retry-After", retryAfterSeconds(retryIn))
+			writeJSON(w, http.StatusTooManyRequests, errorBody{
+				"too_many_attempts",
+				"tentativas demais. Tente de novo em alguns minutos.",
+			})
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) failCredential(keys ...string) {
+	for _, key := range keys {
+		s.logins.fail(key)
+	}
+}
+
+func (s *Server) succeedCredential(keys ...string) {
+	for _, key := range keys {
+		s.logins.succeed(key)
+	}
+}
+
 func unauthorized(w http.ResponseWriter, message string) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="diarias"`)
 	writeJSON(w, http.StatusUnauthorized, errorBody{"unauthorized", message})
@@ -122,21 +154,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ipKey := "ip:" + clientIP(r, s.cfg.TrustProxy)
 	userKey := "user:" + store.NormalizeUsername(body.Username)
 
-	for _, key := range []string{ipKey, userKey} {
-		if ok, retryIn := s.logins.allow(key); !ok {
-			w.Header().Set("Retry-After", retryAfterSeconds(retryIn))
-			writeJSON(w, http.StatusTooManyRequests, errorBody{
-				"too_many_attempts",
-				"tentativas demais. Tente de novo em alguns minutos.",
-			})
-			return
-		}
+	if !s.guardCredential(w, ipKey, userKey) {
+		return
 	}
 
 	user, err := s.store.Authenticate(r.Context(), body.Username, body.Password)
 	if errors.Is(err, store.ErrInvalidCredentials) {
-		s.logins.fail(ipKey)
-		s.logins.fail(userKey)
+		s.failCredential(ipKey, userKey)
 		// Logged without the password, and with the username only so a real
 		// operator can tell an attack from someone's caps lock.
 		slog.Warn("login rejected",
@@ -156,8 +180,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logins.succeed(ipKey)
-	s.logins.succeed(userKey)
+	s.succeedCredential(ipKey, userKey)
 	slog.Info("login", "username", user.Username)
 
 	writeJSON(w, http.StatusOK, sessionResponse(session, user))
@@ -181,16 +204,36 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, user, err := s.store.RefreshSession(r.Context(), body.RefreshToken)
-	if errors.Is(err, store.ErrInvalidCredentials) {
-		unauthorized(w, "refresh token inválido ou expirado")
+	// Keyed separately from login: a device stuck in a failing refresh loop
+	// must not burn the budget its owner needs to sign in again and fix it.
+	ipKey := "refresh:ip:" + clientIP(r, s.cfg.TrustProxy)
+	if !s.guardCredential(w, ipKey) {
 		return
 	}
+
+	session, user, err := s.store.RefreshSession(r.Context(), body.RefreshToken)
 	if err != nil {
+		var replay store.ReplayedRefreshTokenError
+		if errors.As(err, &replay) {
+			// An already-consumed token came back. Loud on our side, because it
+			// means a copy of the credential exists somewhere it should not;
+			// silent to the caller, because confirming the replay was noticed
+			// only informs an attacker.
+			slog.Warn("refresh token replay — sessions revoked",
+				"username", replay.Username,
+				"revoked_sessions", replay.RevokedSessions,
+				"ip", clientIP(r, s.cfg.TrustProxy))
+		}
+		if errors.Is(err, store.ErrInvalidCredentials) {
+			s.failCredential(ipKey)
+			unauthorized(w, "refresh token inválido ou expirado")
+			return
+		}
 		writeError(w, r, err)
 		return
 	}
 
+	s.succeedCredential(ipKey)
 	slog.Info("session refreshed", "username", user.Username)
 	writeJSON(w, http.StatusOK, sessionResponse(session, user))
 }
@@ -234,8 +277,21 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Throttled even though the caller is authenticated: otherwise a stolen
+	// access token can be escalated into full account takeover by brute-forcing
+	// the current password and then changing it, locking the owner out.
+	pwdKey := "password:" + store.NormalizeUsername(user.Username)
+	ipKey := "password:ip:" + clientIP(r, s.cfg.TrustProxy)
+	if !s.guardCredential(w, pwdKey, ipKey) {
+		return
+	}
+
 	if _, err := s.store.Authenticate(r.Context(), user.Username, body.CurrentPassword); err != nil {
 		if errors.Is(err, store.ErrInvalidCredentials) {
+			s.failCredential(pwdKey, ipKey)
+			slog.Warn("wrong current password on change attempt",
+				"username", user.Username,
+				"ip", clientIP(r, s.cfg.TrustProxy))
 			// Authentication itself succeeded in requireSession. A wrong current
 			// password is not an expired bearer token, so it must not trigger the
 			// client's refresh/logout flow.
@@ -246,6 +302,8 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+
+	s.succeedCredential(pwdKey, ipKey)
 
 	// SetPassword drops every session, including this one — the client must
 	// log in again, which is the safe behaviour after a credential change.
@@ -263,4 +321,55 @@ func retryAfterSeconds(d time.Duration) string {
 		seconds = 1
 	}
 	return strconv.Itoa(seconds)
+}
+
+// sessions lists the caller's signed-in devices.
+func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
+	user, ok := userFrom(r.Context())
+	if !ok {
+		unauthorized(w, "credenciais necessárias")
+		return
+	}
+	list, err := s.store.ListSessions(r.Context(), user.ID, tokenFrom(r.Context()))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// revokeSession signs out one other device.
+func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
+	user, ok := userFrom(r.Context())
+	if !ok {
+		unauthorized(w, "credenciais necessárias")
+		return
+	}
+
+	err := s.store.DeleteSessionByID(r.Context(), user.ID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	slog.Info("session revoked", "username", user.Username)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeOtherSessions signs out everything except the caller's own device.
+func (s *Server) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	user, ok := userFrom(r.Context())
+	if !ok {
+		unauthorized(w, "credenciais necessárias")
+		return
+	}
+
+	revoked, err := s.store.DeleteOtherSessions(
+		r.Context(), user.ID, tokenFrom(r.Context()))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	slog.Info("other sessions revoked",
+		"username", user.Username, "count", revoked)
+	writeJSON(w, http.StatusOK, map[string]int64{"revoked": revoked})
 }

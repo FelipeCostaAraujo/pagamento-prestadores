@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "44878482172",
+    "project_id": "calendario-prestadores",
+    "storage_bucket": "calendario-prestadores.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:44878482172:android:5c1b3492a9002422b2a579",
+        "android_client_info": {
+          "package_name": "br.com.felipearaujo.diarias"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDiAI9beGEkBj-31L9Ne4MPFf5prmTeCZA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

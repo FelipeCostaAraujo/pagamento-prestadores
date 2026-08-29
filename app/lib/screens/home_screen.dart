@@ -176,11 +176,21 @@ class _Body extends StatelessWidget {
       return _ErrorState(state: state);
     }
 
-    return switch (state.tab) {
+    final screen = switch (state.tab) {
       AppTab.calendar => CalendarScreen(state: state),
       AppTab.closing => ClosingScreen(state: state),
       AppTab.people => PeopleScreen(state: state),
     };
+
+    if (!state.offlineMode) return screen;
+    // Cached data is still usable data — say so above it rather than blocking
+    // the screen, and make clear that edits are not lost.
+    return Column(
+      children: [
+        _OfflineBanner(state: state),
+        Expanded(child: screen),
+      ],
+    );
   }
 }
 
@@ -316,6 +326,60 @@ class _TabButton extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Says the screen is showing what the phone last saw, and that edits are safe.
+class _OfflineBanner extends StatelessWidget {
+  const _OfflineBanner({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final queued = state.queuedWrites;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: DsSpace.s4,
+        vertical: DsSpace.s2,
+      ),
+      color: DsColors.openBg,
+      child: Row(
+        children: [
+          const Icon(
+            Icons.cloud_off_outlined,
+            size: 16,
+            color: DsColors.openFg,
+          ),
+          const SizedBox(width: DsSpace.s2),
+          Expanded(
+            child: Text(
+              queued == 0
+                  ? 'Sem conexão — mostrando os dados salvos no aparelho.'
+                  : queued == 1
+                  ? 'Sem conexão — 1 alteração será enviada depois.'
+                  : 'Sem conexão — $queued alterações serão enviadas depois.',
+              style: DsText.body(size: 12, height: 1.3, color: DsColors.openFg),
+            ),
+          ),
+          const SizedBox(width: DsSpace.s2),
+          GestureDetector(
+            onTap: state.loading ? null : state.load,
+            child: Text(
+              'Tentar',
+              style: DsText.body(
+                size: 12,
+                weight: DsWeight.bold,
+                height: 1.3,
+                color: DsColors.openFg,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

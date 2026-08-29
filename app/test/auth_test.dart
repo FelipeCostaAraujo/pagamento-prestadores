@@ -229,25 +229,29 @@ void main() {
     );
   });
 
-  test('restore keeps the token when the server is unreachable', () async {
-    final store = _FakeTokenStore()
-      ..stored = const StoredSessionTokens(
-        accessToken: 'token-abc',
-        refreshToken: 'refresh-abc',
+  test(
+    'an unreachable server keeps the session so the cache is usable',
+    () async {
+      // Regression: a cold start with no network dropped straight to the login
+      // screen, which made the offline cache unreachable in exactly the
+      // situation it exists for.
+      final store = _FakeTokenStore()
+        ..stored = const StoredSessionTokens(
+          accessToken: 'token-abc',
+          refreshToken: 'refresh-abc',
+        );
+      final offline = MockClient(
+        (_) async => throw http.ClientException('connection refused'),
       );
-    final offline = MockClient(
-      (_) async => throw http.ClientException('connection refused'),
-    );
-    final auth = _controller(offline, store);
+      final auth = _controller(offline, store);
 
-    await auth.restore();
+      await auth.restore();
 
-    // Being offline is not proof the session died — throwing the token away
-    // would force a needless re-login once the network comes back.
-    expect(auth.status, AuthStatus.loggedOut);
-    expect(store.stored?.accessToken, 'token-abc');
-    expect(store.stored?.refreshToken, 'refresh-abc');
-  });
+      expect(auth.status, AuthStatus.loggedIn);
+      expect(store.stored?.accessToken, 'token-abc');
+      expect(auth.api.token, 'token-abc', reason: 'needed to retry when back');
+    },
+  );
 
   test('every authenticated request carries the bearer token', () async {
     final headers = <String>[];

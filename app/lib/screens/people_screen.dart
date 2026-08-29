@@ -8,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../theme/tokens.dart';
 import '../widgets/ds_widgets.dart';
 import '../widgets/money_field.dart';
+import 'sessions_screen.dart';
 
 /// Tab 3 — the prestadoras and their default day rate.
 class PeopleScreen extends StatelessWidget {
@@ -87,7 +88,7 @@ class _AccountSection extends StatelessWidget {
               const SizedBox(width: DsSpace.s3),
               Expanded(
                 child: Text(
-                  auth.user?.username ?? '—',
+                  auth.user?.username ?? 'Sessão salva neste aparelho',
                   style: DsText.body(
                     size: 15,
                     weight: DsWeight.bold,
@@ -107,6 +108,38 @@ class _AccountSection extends StatelessWidget {
             ],
           ),
         ),
+        const SizedBox(height: DsSpace.s2),
+        DsCard(
+          padding: EdgeInsets.zero,
+          elevated: false,
+          child: ListTile(
+            leading: const Icon(
+              Icons.devices_other,
+              size: 22,
+              color: DsColors.textMuted,
+            ),
+            title: Text(
+              'Aparelhos conectados',
+              style: DsText.body(
+                size: 14,
+                weight: DsWeight.bold,
+                height: 1.2,
+                color: DsColors.textStrong,
+              ),
+            ),
+            trailing: const Icon(
+              Icons.chevron_right,
+              color: DsColors.textMuted,
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => SessionsScreen(api: auth.api),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: DsSpace.s2),
+        const _ReminderToggle(),
       ],
     );
   }
@@ -189,6 +222,31 @@ class _ProviderCard extends StatelessWidget {
                 semanticLabel: 'Valor padrão de ${provider.displayName}',
                 onCommitted: (cents) =>
                     state.setProviderRate(provider.id, cents),
+              ),
+            ],
+          ),
+          const SizedBox(height: DsSpace.s3),
+          const Divider(height: 1, color: DsColors.borderSubtle),
+          const SizedBox(height: DsSpace.s3),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'WhatsApp',
+                  style: DsText.body(
+                    size: 13,
+                    height: 1.3,
+                    color: DsColors.textMuted,
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 168,
+                child: _PhoneField(
+                  phone: provider.phone,
+                  onCommitted: (phone) =>
+                      state.setProviderPhone(provider.id, phone),
+                ),
               ),
             ],
           ),
@@ -351,5 +409,205 @@ class _RemoveButton extends StatelessWidget {
     );
 
     if (confirmed ?? false) await state.deleteProvider(provider.id);
+  }
+}
+
+/// Phone number for the WhatsApp hand-off. Committed on submit or focus loss,
+/// like the other inline fields.
+class _PhoneField extends StatefulWidget {
+  const _PhoneField({required this.phone, required this.onCommitted});
+
+  final String phone;
+  final ValueChanged<String> onCommitted;
+
+  @override
+  State<_PhoneField> createState() => _PhoneFieldState();
+}
+
+class _PhoneFieldState extends State<_PhoneField> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.phone);
+    _focusNode = FocusNode()..addListener(_onFocusChanged);
+  }
+
+  @override
+  void didUpdateWidget(_PhoneField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.phone != oldWidget.phone && !_focusNode.hasFocus) {
+      _controller.text = widget.phone;
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChanged);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (!_focusNode.hasFocus) _commit();
+  }
+
+  void _commit() {
+    final phone = _controller.text.trim();
+    if (phone != widget.phone) widget.onCommitted(phone);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: DsSize.controlMd,
+      padding: const EdgeInsets.symmetric(horizontal: DsSpace.s3),
+      decoration: BoxDecoration(
+        color: DsColors.surfaceCard,
+        border: Border.all(color: DsColors.borderStrong, width: 1.5),
+        borderRadius: BorderRadius.circular(DsRadius.md),
+      ),
+      child: Center(
+        child: TextField(
+          controller: _controller,
+          focusNode: _focusNode,
+          keyboardType: TextInputType.phone,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _commit(),
+          style: DsText.body(
+            size: 15,
+            weight: DsWeight.bold,
+            height: 1,
+            color: DsColors.textStrong,
+          ),
+          decoration: InputDecoration(
+            isDense: true,
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.zero,
+            hintText: '(11) 90000-0000',
+            hintStyle: DsText.body(
+              size: 15,
+              height: 1,
+              color: DsColors.slate300,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Turns the end-of-month reminder on or off.
+///
+/// Scheduled locally on the phone, so it works with the app closed and with no
+/// network — and needs no push service.
+class _ReminderToggle extends StatefulWidget {
+  const _ReminderToggle();
+
+  @override
+  State<_ReminderToggle> createState() => _ReminderToggleState();
+}
+
+class _ReminderToggleState extends State<_ReminderToggle> {
+  bool? _enabled;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final reminders = ReminderScope.maybeOf(context);
+    if (reminders == null) return;
+    final enabled = await reminders.isEnabled();
+    if (mounted) setState(() => _enabled = enabled);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_enabled == null) _load();
+  }
+
+  Future<void> _toggle(bool value) async {
+    final reminders = ReminderScope.maybeOf(context);
+    if (reminders == null || _busy) return;
+
+    setState(() => _busy = true);
+    final result = await reminders.setEnabled(value);
+    if (!mounted) return;
+    setState(() {
+      _enabled = result;
+      _busy = false;
+    });
+
+    // The OS can refuse; saying so beats a switch that silently springs back.
+    if (value && !result && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Permita as notificações do app para receber o lembrete.',
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (ReminderScope.maybeOf(context) == null) {
+      return const SizedBox.shrink();
+    }
+
+    return DsCard(
+      padding: const EdgeInsets.symmetric(horizontal: DsSpace.s4, vertical: 6),
+      elevated: false,
+      child: Row(
+        children: [
+          const Icon(
+            Icons.notifications_none,
+            size: 22,
+            color: DsColors.textMuted,
+          ),
+          const SizedBox(width: DsSpace.s3),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Lembrete de fechamento',
+                  style: DsText.body(
+                    size: 14,
+                    weight: DsWeight.bold,
+                    height: 1.2,
+                    color: DsColors.textStrong,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'No último dia do mês, às 19h',
+                  style: DsText.body(
+                    size: 12,
+                    height: 1.3,
+                    color: DsColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _enabled ?? false,
+            onChanged: _busy || _enabled == null ? null : _toggle,
+            activeThumbColor: DsColors.brand,
+          ),
+        ],
+      ),
+    );
   }
 }

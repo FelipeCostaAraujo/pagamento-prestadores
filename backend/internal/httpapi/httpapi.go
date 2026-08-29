@@ -41,6 +41,9 @@ func NewHandler(st *store.Store, cfg config.Config) http.Handler {
 	private.HandleFunc("POST /api/v1/auth/logout", s.logout)
 	private.HandleFunc("GET /api/v1/auth/me", s.me)
 	private.HandleFunc("POST /api/v1/auth/password", s.changePassword)
+	private.HandleFunc("GET /api/v1/auth/sessions", s.sessions)
+	private.HandleFunc("DELETE /api/v1/auth/sessions", s.revokeOtherSessions)
+	private.HandleFunc("DELETE /api/v1/auth/sessions/{id}", s.revokeSession)
 
 	private.HandleFunc("GET /api/v1/providers", s.listProviders)
 	private.HandleFunc("POST /api/v1/providers", s.createProvider)
@@ -94,6 +97,7 @@ type providerBody struct {
 	Name             *string `json:"name"`
 	DefaultRateCents *int64  `json:"default_rate_cents"`
 	ColorIndex       *int    `json:"color_index"`
+	Phone            *string `json:"phone"`
 }
 
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +136,7 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request) {
 		Name:             body.Name,
 		DefaultRateCents: body.DefaultRateCents,
 		ColorIndex:       body.ColorIndex,
+		Phone:            body.Phone,
 	})
 	if err != nil {
 		writeError(w, r, err)
@@ -194,8 +199,10 @@ func (s *Server) listEntries(w http.ResponseWriter, r *http.Request) {
 type entryBody struct {
 	ProviderID string       `json:"provider_id"`
 	Date       *domain.Date `json:"date"`
-	// Omit to adopt the prestadora's current default rate.
+	// Omit to adopt the value implied by the kind.
 	ValueCents *int64 `json:"value_cents"`
+	// "full" (default), "half" or "absence".
+	Kind string `json:"kind"`
 }
 
 func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +220,13 @@ func (s *Server) upsertEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, err := s.store.UpsertEntry(r.Context(), body.ProviderID, *body.Date, body.ValueCents)
+	kind, err := domain.ParseEntryKind(body.Kind)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	entry, err := s.store.UpsertEntry(r.Context(), body.ProviderID, *body.Date, kind, body.ValueCents)
 	if err != nil {
 		writeError(w, r, err)
 		return

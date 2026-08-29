@@ -23,12 +23,12 @@ type Store struct{ pool *pgxpool.Pool }
 
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-const providerCols = `id, name, default_rate_cents, color_index, position, created_at, updated_at`
+const providerCols = `id, name, default_rate_cents, color_index, position, phone, created_at, updated_at`
 
 func scanProvider(row pgx.Row) (domain.Provider, error) {
 	var p domain.Provider
 	err := row.Scan(&p.ID, &p.Name, &p.DefaultRateCents, &p.ColorIndex,
-		&p.Position, &p.CreatedAt, &p.UpdatedAt)
+		&p.Position, &p.Phone, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Provider{}, domain.ErrNotFound
 	}
@@ -143,6 +143,7 @@ type ProviderPatch struct {
 	Name             *string
 	DefaultRateCents *int64
 	ColorIndex       *int
+	Phone            *string
 }
 
 func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPatch) (domain.Provider, error) {
@@ -152,7 +153,8 @@ func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPat
 	if patch.ColorIndex != nil && *patch.ColorIndex < 0 {
 		return domain.Provider{}, domain.Invalid("color_index must not be negative")
 	}
-	if patch.Name == nil && patch.DefaultRateCents == nil && patch.ColorIndex == nil {
+	if patch.Name == nil && patch.DefaultRateCents == nil &&
+		patch.ColorIndex == nil && patch.Phone == nil {
 		return s.GetProvider(ctx, id)
 	}
 
@@ -166,6 +168,11 @@ func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPat
 		wrapped := *patch.ColorIndex % PaletteSize
 		color = &wrapped
 	}
+	var phone *string
+	if patch.Phone != nil {
+		trimmed := strings.TrimSpace(*patch.Phone)
+		phone = &trimmed
+	}
 
 	// COALESCE keeps this a single statement: a nil parameter means "keep the
 	// existing value", which is exactly the PATCH semantics we want.
@@ -173,10 +180,11 @@ func (s *Store) UpdateProvider(ctx context.Context, id string, patch ProviderPat
 		UPDATE providers SET
 			name               = COALESCE($2, name),
 			default_rate_cents = COALESCE($3, default_rate_cents),
-			color_index        = COALESCE($4, color_index)
+			color_index        = COALESCE($4, color_index),
+			phone              = COALESCE($5, phone)
 		WHERE id = $1 AND archived_at IS NULL
 		RETURNING `+providerCols,
-		id, name, patch.DefaultRateCents, color))
+		id, name, patch.DefaultRateCents, color, phone))
 }
 
 // ArchiveProvider soft-deletes a prestadora. Her worked days and payment
@@ -196,7 +204,7 @@ func (s *Store) ArchiveProvider(ctx context.Context, id string) error {
 // ListEntries returns every worked day in the half-open range [from, to).
 func (s *Store) ListEntries(ctx context.Context, from, to domain.Date) ([]domain.WorkEntry, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT e.id, e.provider_id, e.work_date, e.value_cents
+		SELECT e.id, e.provider_id, e.work_date, e.value_cents, e.kind
 		FROM work_entries e
 		JOIN providers p ON p.id = e.provider_id AND p.archived_at IS NULL
 		WHERE e.work_date >= $1 AND e.work_date < $2
@@ -210,7 +218,7 @@ func (s *Store) ListEntries(ctx context.Context, from, to domain.Date) ([]domain
 	entries := make([]domain.WorkEntry, 0, 32)
 	for rows.Next() {
 		var e domain.WorkEntry
-		if err := rows.Scan(&e.ID, &e.ProviderID, &e.Date.Time, &e.ValueCents); err != nil {
+		if err := rows.Scan(&e.ID, &e.ProviderID, &e.Date.Time, &e.ValueCents, &e.Kind); err != nil {
 			return nil, fmt.Errorf("scan entry: %w", err)
 		}
 		entries = append(entries, e)
@@ -218,24 +226,41 @@ func (s *Store) ListEntries(ctx context.Context, from, to domain.Date) ([]domain
 	return entries, rows.Err()
 }
 
-// UpsertEntry marks a day as worked. A nil valueCents adopts the prestadora's
-// current default rate; an existing entry has its value replaced.
-func (s *Store) UpsertEntry(ctx context.Context, providerID string, date domain.Date, valueCents *int64) (domain.WorkEntry, error) {
+// UpsertEntry records a day. A nil valueCents adopts the value implied by the
+// kind — the full rate, half of it, or nothing for an absence — and an existing
+// entry has both value and kind replaced.
+func (s *Store) UpsertEntry(ctx context.Context, providerID string, date domain.Date, kind domain.EntryKind, valueCents *int64) (domain.WorkEntry, error) {
+	if !kind.Valid() {
+		return domain.WorkEntry{}, domain.Invalid("kind %q is not valid", kind)
+	}
 	if valueCents != nil && *valueCents < 0 {
 		return domain.WorkEntry{}, domain.Invalid("value_cents must not be negative")
+	}
+	// An absence costs nothing by definition; the database enforces this too,
+	// but rejecting it here gives the caller a usable message instead of a
+	// constraint violation.
+	if !kind.Billable() && valueCents != nil && *valueCents != 0 {
+		return domain.WorkEntry{}, domain.Invalid("uma falta não pode ter valor")
 	}
 
 	var e domain.WorkEntry
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO work_entries (provider_id, work_date, value_cents)
-		SELECT p.id, $2::date, COALESCE($3::bigint, p.default_rate_cents)
+		INSERT INTO work_entries (provider_id, work_date, value_cents, kind)
+		SELECT p.id, $2::date,
+			COALESCE($3::bigint, CASE $4::text
+				WHEN 'half' THEN p.default_rate_cents / 2
+				WHEN 'absence' THEN 0
+				ELSE p.default_rate_cents
+			END),
+			$4::text
 		FROM providers p
 		WHERE p.id = $1 AND p.archived_at IS NULL
 		ON CONFLICT (provider_id, work_date)
-			DO UPDATE SET value_cents = EXCLUDED.value_cents
-		RETURNING id, provider_id, work_date, value_cents`,
-		providerID, date.Time, valueCents,
-	).Scan(&e.ID, &e.ProviderID, &e.Date.Time, &e.ValueCents)
+			DO UPDATE SET value_cents = EXCLUDED.value_cents,
+			              kind = EXCLUDED.kind
+		RETURNING id, provider_id, work_date, value_cents, kind`,
+		providerID, date.Time, valueCents, string(kind),
+	).Scan(&e.ID, &e.ProviderID, &e.Date.Time, &e.ValueCents, &e.Kind)
 
 	// No row means the SELECT matched no active prestadora.
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -286,8 +311,12 @@ func (s *Store) MonthClosing(ctx context.Context, period domain.Period) (domain.
 	distinctDays := map[string]struct{}{}
 	for _, e := range entries {
 		byProvider[e.ProviderID] = append(byProvider[e.ProviderID],
-			domain.ClosingDay{Date: e.Date, ValueCents: e.ValueCents})
-		distinctDays[e.Date.String()] = struct{}{}
+			domain.ClosingDay{Date: e.Date, ValueCents: e.ValueCents, Kind: e.Kind})
+		// An absence is not a worked day, so it must not inflate the month's
+		// "dias trabalhados".
+		if e.Kind.Billable() {
+			distinctDays[e.Date.String()] = struct{}{}
+		}
 	}
 
 	result := domain.MonthClosing{
@@ -303,15 +332,27 @@ func (s *Store) MonthClosing(ctx context.Context, period domain.Period) (domain.
 			days = []domain.ClosingDay{}
 		}
 		var total int64
+		var worked, halves, absences int
 		for _, d := range days {
 			total += d.ValueCents
+			switch d.Kind {
+			case domain.EntryAbsence:
+				absences++
+			case domain.EntryHalf:
+				worked++
+				halves++
+			default:
+				worked++
+			}
 		}
 
 		pc := domain.ProviderClosing{
-			Provider:   p,
-			EntryCount: len(days),
-			TotalCents: total,
-			Days:       days,
+			Provider:     p,
+			EntryCount:   worked,
+			HalfCount:    halves,
+			AbsenceCount: absences,
+			TotalCents:   total,
+			Days:         days,
 		}
 		if pay, ok := payments[p.ID]; ok {
 			pc.Paid = true
@@ -379,7 +420,8 @@ func (s *Store) MarkPaid(ctx context.Context, period domain.Period, providerID s
 		var total int64
 		var count int
 		err = tx.QueryRow(ctx, `
-			SELECT COALESCE(SUM(value_cents), 0), COUNT(*)
+			SELECT COALESCE(SUM(value_cents), 0),
+			       COUNT(*) FILTER (WHERE kind <> 'absence')
 			FROM work_entries
 			WHERE provider_id = $1 AND work_date >= $2 AND work_date < $3`,
 			providerID, from.Time, to.Time).Scan(&total, &count)

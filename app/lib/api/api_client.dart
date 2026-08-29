@@ -141,6 +141,24 @@ class ApiClient {
     clearSession();
   }
 
+  /// The devices currently signed in to this account.
+  Future<List<SessionInfo>> listSessions() async {
+    final body = await _send('GET', '/api/v1/auth/sessions');
+    return (body as List<dynamic>)
+        .map((s) => SessionInfo.fromJson(s as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> revokeSession(String id) async {
+    await _send('DELETE', '/api/v1/auth/sessions/$id');
+  }
+
+  /// Signs out every device except this one.
+  Future<int> revokeOtherSessions() async {
+    final body = await _send('DELETE', '/api/v1/auth/sessions');
+    return ((body as Map<String, dynamic>)['revoked'] as num?)?.toInt() ?? 0;
+  }
+
   // ------------------------------------------------------------- providers --
 
   Future<List<Provider>> listProviders() async {
@@ -166,13 +184,18 @@ class ApiClient {
     String id, {
     String? name,
     int? defaultRateCents,
+    String? phone,
   }) async {
     final body = await _send(
       'PATCH',
       '/api/v1/providers/$id',
       // Null-aware entries: an omitted field means "leave it as it is",
       // matching the backend's PATCH semantics.
-      body: {'name': ?name, 'default_rate_cents': ?defaultRateCents},
+      body: {
+        'name': ?name,
+        'default_rate_cents': ?defaultRateCents,
+        'phone': ?phone,
+      },
     );
     return Provider.fromJson(body as Map<String, dynamic>);
   }
@@ -202,6 +225,7 @@ class ApiClient {
   Future<WorkEntry> upsertEntry({
     required String providerId,
     required DateTime date,
+    EntryKind kind = EntryKind.full,
     int? valueCents,
   }) async {
     final body = await _send(
@@ -210,7 +234,8 @@ class ApiClient {
       body: {
         'provider_id': providerId,
         'date': dateKey(date),
-        // Omitted so the server falls back to the prestadora's default rate.
+        'kind': kind.wire,
+        // Omitted so the server derives it from the kind and her rate.
         'value_cents': ?valueCents,
       },
     );
@@ -488,4 +513,44 @@ class AuthUser {
 
   factory AuthUser.fromJson(Map<String, dynamic> json) =>
       AuthUser(id: json['id'] as String, username: json['username'] as String);
+}
+
+/// One signed-in device, for the account screen.
+@immutable
+class SessionInfo {
+  const SessionInfo({
+    required this.id,
+    required this.userAgent,
+    required this.createdAt,
+    required this.lastSeenAt,
+    required this.current,
+  });
+
+  final String id;
+
+  /// Client-supplied and therefore untrusted — shown, never acted on.
+  final String userAgent;
+  final DateTime createdAt;
+  final DateTime lastSeenAt;
+
+  /// True for the device asking, which must not offer to revoke itself.
+  final bool current;
+
+  /// A readable device name, since the raw user agent is noise.
+  String get label {
+    final ua = userAgent.toLowerCase();
+    if (ua.contains('android')) return 'Android';
+    if (ua.contains('iphone') || ua.contains('ios')) return 'iPhone';
+    if (ua.contains('mac')) return 'Mac';
+    if (ua.contains('dart')) return 'Aplicativo';
+    return userAgent.isEmpty ? 'Aparelho desconhecido' : userAgent;
+  }
+
+  factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
+    id: json['id'] as String,
+    userAgent: (json['user_agent'] as String?) ?? '',
+    createdAt: DateTime.parse(json['created_at'] as String),
+    lastSeenAt: DateTime.parse(json['last_seen_at'] as String),
+    current: (json['current'] as bool?) ?? false,
+  );
 }

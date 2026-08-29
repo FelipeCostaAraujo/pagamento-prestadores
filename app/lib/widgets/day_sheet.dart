@@ -208,7 +208,11 @@ class _ProviderRow extends StatelessWidget {
                           const SizedBox(height: 2),
                           Text(
                             worked
-                                ? 'Trabalhou neste dia'
+                                ? switch (entry.kind) {
+                                    EntryKind.full => 'Trabalhou o dia inteiro',
+                                    EntryKind.half => 'Trabalhou meio período',
+                                    EntryKind.absence => 'Não veio neste dia',
+                                  }
                                 : 'Valor padrão ${formatMoney(provider.defaultRateCents)}',
                             style: DsText.body(
                               size: 12,
@@ -228,28 +232,133 @@ class _ProviderRow extends StatelessWidget {
             const SizedBox(height: DsSpace.s3),
             const Divider(height: 1, color: DsColors.borderSubtle),
             const SizedBox(height: DsSpace.s3),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Valor desta diária',
-                    style: DsText.body(size: 13, height: 1),
-                  ),
-                ),
-                MoneyField(
-                  // Keyed by entry so switching days rebuilds the controller
-                  // with the right amount instead of reusing the old text.
-                  key: ValueKey('value-${entry.id}'),
-                  valueCents: entry.valueCents,
-                  width: 62,
-                  semanticLabel: 'Valor da diária de ${provider.displayName}',
-                  onCommitted: (cents) =>
-                      state.setEntryValue(provider.id, date, cents),
-                ),
-              ],
+            _KindSelector(
+              selected: entry.kind,
+              accent: palette.dot,
+              enabled: !saving,
+              onChanged: (kind) => state.setEntryKind(provider.id, date, kind),
             ),
+            // A falta não tem valor a editar — o campo sumir deixa isso óbvio.
+            if (entry.kind.billable) ...[
+              const SizedBox(height: DsSpace.s3),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      entry.kind == EntryKind.half
+                          ? 'Valor desta meia diária'
+                          : 'Valor desta diária',
+                      style: DsText.body(size: 13, height: 1),
+                    ),
+                  ),
+                  MoneyField(
+                    // Keyed by entry so switching days rebuilds the controller
+                    // with the right amount instead of reusing the old text.
+                    key: ValueKey('value-${entry.id}'),
+                    valueCents: entry.valueCents,
+                    width: 62,
+                    semanticLabel: 'Valor da diária de ${provider.displayName}',
+                    onCommitted: (cents) =>
+                        state.setEntryValue(provider.id, date, cents),
+                  ),
+                ],
+              ),
+            ],
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// Three-way choice for a marked day.
+///
+/// Tapping the row still just marks the day worked — the common case stays one
+/// tap. This appears only once a day is marked, for the two cases that are not
+/// a normal full day.
+class _KindSelector extends StatelessWidget {
+  const _KindSelector({
+    required this.selected,
+    required this.accent,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final EntryKind selected;
+  final Color accent;
+  final bool enabled;
+  final ValueChanged<EntryKind> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (final kind in EntryKind.values)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: _KindOption(
+                kind: kind,
+                selected: kind == selected,
+                accent: accent,
+                enabled: enabled,
+                onTap: () => onChanged(kind),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _KindOption extends StatelessWidget {
+  const _KindOption({
+    required this.kind,
+    required this.selected,
+    required this.accent,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final EntryKind kind;
+  final bool selected;
+  final Color accent;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: kind.label,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(DsRadius.sm),
+        child: AnimatedContainer(
+          duration: DsMotion.fast,
+          curve: DsMotion.easeOut,
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? accent : DsColors.surfaceCard,
+            border: Border.all(
+              color: selected ? accent : DsColors.borderStrong,
+            ),
+            borderRadius: BorderRadius.circular(DsRadius.sm),
+          ),
+          child: Text(
+            kind.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: DsText.body(
+              size: 12,
+              weight: DsWeight.bold,
+              height: 1,
+              color: selected ? Colors.white : DsColors.textBody,
+            ),
+          ),
+        ),
       ),
     );
   }

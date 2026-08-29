@@ -203,12 +203,17 @@ class _DayCell extends StatelessWidget {
     final entries = state.entriesOn(date);
     final active = entries.isNotEmpty;
     final total = state.totalOn(date);
+    // A day with nothing but absences is recorded, but nobody worked it — it
+    // should not read as a working day.
+    final worked = entries.any((e) => e.kind.billable);
 
     return Semantics(
       button: true,
       label: active
-          ? '$day, ${entries.length} diária(s), ${formatMoney(total)}'
-          : '$day, sem diárias',
+          ? '$day, ${entries.where((e) => e.kind.billable).length} diária(s), '
+                '${entries.where((e) => !e.kind.billable).length} falta(s), '
+                '${formatMoney(total)}'
+          : '$day, sem lançamentos',
       child: InkWell(
         onTap: () => showDaySheet(context, state: state, date: date),
         borderRadius: BorderRadius.circular(12),
@@ -216,9 +221,13 @@ class _DayCell extends StatelessWidget {
           constraints: const BoxConstraints(minHeight: 46),
           padding: const EdgeInsets.symmetric(vertical: 6),
           decoration: BoxDecoration(
-            color: active ? DsColors.teal50 : DsColors.surfaceCard,
+            color: worked ? DsColors.teal50 : DsColors.surfaceCard,
             border: Border.all(
-              color: active ? DsColors.teal300 : DsColors.borderSubtle,
+              color: worked
+                  ? DsColors.teal300
+                  : active
+                  ? DsColors.borderStrong
+                  : DsColors.borderSubtle,
             ),
             borderRadius: BorderRadius.circular(12),
           ),
@@ -231,7 +240,7 @@ class _DayCell extends StatelessWidget {
                   size: 15,
                   weight: DsWeight.bold,
                   height: 1,
-                  color: active ? DsColors.teal700 : DsColors.textBody,
+                  color: worked ? DsColors.teal700 : DsColors.textBody,
                 ),
               ),
               const SizedBox(height: 3),
@@ -244,7 +253,10 @@ class _DayCell extends StatelessWidget {
                     for (final entry in entries)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 1.5),
-                        child: DsDot(color: _dotColor(entry)),
+                        child: _EntryDot(
+                          color: _dotColor(entry),
+                          kind: entry.kind,
+                        ),
                       ),
                   ],
                 ),
@@ -430,17 +442,68 @@ class _RecentRow extends StatelessWidget {
             ),
             const SizedBox(width: DsSpace.s2),
             Text(
-              formatMoney(entry.valueCents),
+              // "R$ 0,00" for an absence reads like a bug; the word says what
+              // actually happened.
+              entry.kind == EntryKind.absence
+                  ? 'falta'
+                  : formatMoney(entry.valueCents),
               style: DsText.body(
                 size: 14,
                 weight: DsWeight.bold,
                 height: 1,
-                color: DsColors.textStrong,
+                color: entry.kind == EntryKind.absence
+                    ? DsColors.textMuted
+                    : DsColors.textStrong,
               ),
             ),
           ],
         ),
       ),
     );
+  }
+}
+
+/// A calendar dot that also says what kind of day it was.
+///
+/// Colour alone already carries who worked, so the kind is shown by shape:
+/// filled for a full day, half-filled for a half day, hollow for an absence.
+/// That keeps it readable without adding a second colour dimension.
+class _EntryDot extends StatelessWidget {
+  const _EntryDot({required this.color, required this.kind});
+
+  final Color color;
+  final EntryKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    const size = 6.0;
+    return switch (kind) {
+      EntryKind.full => DsDot(color: color, size: size),
+      EntryKind.half => SizedBox(
+        width: size,
+        height: size,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: color, width: 1),
+            // Left half filled: a day only partly worked.
+            gradient: LinearGradient(
+              colors: [color, Colors.transparent],
+              stops: const [0.5, 0.5],
+            ),
+          ),
+        ),
+      ),
+      EntryKind.absence => SizedBox(
+        width: size,
+        height: size,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: color, width: 1),
+          ),
+        ),
+      ),
+    };
   }
 }

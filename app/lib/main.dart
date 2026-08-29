@@ -2,13 +2,21 @@ import 'package:flutter/material.dart';
 
 import 'api/api_client.dart';
 import 'auth/auth_controller.dart';
+import 'firebase/firebase_setup.dart';
+import 'notifications/reminder_service.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'state/app_state.dart';
 import 'theme/app_theme.dart';
 import 'theme/tokens.dart';
 
-void main() => runApp(const DiariasApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Best-effort: if Firebase cannot start, the app still runs. Awaited so the
+  // crash handlers are in place before any app code executes.
+  await FirebaseSetup.initialize();
+  runApp(const DiariasApp());
+}
 
 class DiariasApp extends StatefulWidget {
   const DiariasApp({super.key});
@@ -21,6 +29,7 @@ class _DiariasAppState extends State<DiariasApp> {
   late final ApiClient _api;
   late final AuthController _auth;
   late final AppState _state;
+  final _reminders = ReminderService();
 
   @override
   void initState() {
@@ -30,12 +39,24 @@ class _DiariasAppState extends State<DiariasApp> {
     _state = AppState(api: _api);
 
     _auth.addListener(_onAuthChanged);
+    // A session restored while offline has no user attached yet; once data
+    // flows again, fill in who it belongs to.
+    _state.addListener(_onStateChanged);
     // Checks for a stored token before deciding which screen to show.
     _auth.restore();
+    // Tops the pending reminders back up; a no-op when the user has them off.
+    _reminders.scheduleAll();
+  }
+
+  void _onStateChanged() {
+    if (!_state.offlineMode && _state.initialLoadDone) {
+      _auth.ensureUserLoaded();
+    }
   }
 
   @override
   void dispose() {
+    _state.removeListener(_onStateChanged);
     _auth.removeListener(_onAuthChanged);
     _auth.dispose();
     _state.dispose();
@@ -55,8 +76,11 @@ class _DiariasAppState extends State<DiariasApp> {
     switch (status) {
       case AuthStatus.loggedIn:
         _state.load();
+        // Crash reports become answerable when you know whose phone it was.
+        FirebaseSetup.setUser(_auth.user?.username);
       case AuthStatus.loggedOut:
         _state.reset();
+        FirebaseSetup.setUser(null);
       case AuthStatus.checking:
         break;
     }
@@ -75,7 +99,10 @@ class _DiariasAppState extends State<DiariasApp> {
           AuthStatus.loggedOut => LoginScreen(auth: _auth),
           AuthStatus.loggedIn => AuthScope(
             auth: _auth,
-            child: AppScope(notifier: _state, child: const HomeScreen()),
+            child: ReminderScope(
+              reminders: _reminders,
+              child: AppScope(notifier: _state, child: const HomeScreen()),
+            ),
           ),
         },
       ),
@@ -135,4 +162,22 @@ class AuthScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(AuthScope oldWidget) => auth != oldWidget.auth;
+}
+
+/// Exposes the reminder scheduler to the account screen.
+class ReminderScope extends InheritedWidget {
+  const ReminderScope({
+    super.key,
+    required this.reminders,
+    required super.child,
+  });
+
+  final ReminderService reminders;
+
+  static ReminderService? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ReminderScope>()?.reminders;
+
+  @override
+  bool updateShouldNotify(ReminderScope oldWidget) =>
+      reminders != oldWidget.reminders;
 }
