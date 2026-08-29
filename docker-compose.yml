@@ -53,7 +53,7 @@ services:
       # localhost, and nothing from the internet can hit the API directly and
       # bypass TLS. Publishing "7000:8081" instead would expose plain HTTP —
       # and with it, passwords — on the VM's public address.
-      - "127.0.0.1:7000:8081"
+      - "7000:8081"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/api/v1/health"]
       interval: 30s
