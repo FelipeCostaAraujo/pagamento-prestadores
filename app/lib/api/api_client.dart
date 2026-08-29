@@ -84,8 +84,29 @@ class ApiClient {
     return Uri.parse(productionUrl);
   }
 
+  /// Identifies this install in the connected-devices list.
+  ///
+  /// The http package's default agent is the same string on every platform,
+  /// which made every row read "Aplicativo" and defeated the point of the
+  /// screen. Browsers forbid setting this header, so web keeps the default.
+  static String get _userAgent {
+    final platform = switch (defaultTargetPlatform) {
+      TargetPlatform.android => 'Android',
+      TargetPlatform.iOS => 'iPhone',
+      TargetPlatform.macOS => 'Mac',
+      TargetPlatform.windows => 'Windows',
+      TargetPlatform.linux => 'Linux',
+      TargetPlatform.fuchsia => 'Fuchsia',
+    };
+    return 'Diarias/$appVersion ($platform)';
+  }
+
+  /// Bumped by hand; only ever shown to the user next to a device.
+  static const appVersion = '1.0.0';
+
   Map<String, String> _headersFor(String? bearer) => {
     'Content-Type': 'application/json; charset=utf-8',
+    if (!kIsWeb) 'User-Agent': _userAgent,
     if (bearer case final t? when t.isNotEmpty) 'Authorization': 'Bearer $t',
   };
 
@@ -542,7 +563,10 @@ class SessionInfo {
     if (ua.contains('android')) return 'Android';
     if (ua.contains('iphone') || ua.contains('ios')) return 'iPhone';
     if (ua.contains('mac')) return 'Mac';
-    if (ua.contains('dart')) return 'Aplicativo';
+    if (ua.contains('windows')) return 'Windows';
+    if (ua.contains('linux')) return 'Linux';
+    // Sessions created before the app identified itself.
+    if (ua.contains('dart')) return 'Aparelho antigo';
     return userAgent.isEmpty ? 'Aparelho desconhecido' : userAgent;
   }
 

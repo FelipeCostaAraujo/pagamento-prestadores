@@ -94,3 +94,38 @@ func TestRevokeSessionIsScopedToItsOwner(t *testing.T) {
 		t.Error("another user managed to sign this session out")
 	}
 }
+
+func TestTouchSessionRefreshesTheClientHint(t *testing.T) {
+	st := store.New(testPool(t))
+	ctx := context.Background()
+	userID, session := newUserWithSession(t, st)
+
+	// The session was created before the app identified itself properly.
+	st.TouchSession(ctx, session.Token, "Diarias/1.0.0 (Android)")
+
+	list, err := st.ListSessions(ctx, userID, session.Token)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if list[0].UserAgent != "Diarias/1.0.0 (Android)" {
+		t.Errorf("user_agent = %q, want the updated hint", list[0].UserAgent)
+	}
+}
+
+func TestTouchSessionKeepsTheHintWhenNoneIsSent(t *testing.T) {
+	st := store.New(testPool(t))
+	ctx := context.Background()
+	userID, session := newUserWithSession(t, st)
+
+	st.TouchSession(ctx, session.Token, "Diarias/1.0.0 (Mac)")
+	// A client that sends no agent must not blank out what is already known.
+	st.TouchSession(ctx, session.Token, "")
+
+	list, err := st.ListSessions(ctx, userID, session.Token)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if list[0].UserAgent != "Diarias/1.0.0 (Mac)" {
+		t.Errorf("user_agent = %q, want it preserved", list[0].UserAgent)
+	}
+}

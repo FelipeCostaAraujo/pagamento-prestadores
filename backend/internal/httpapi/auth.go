@@ -72,7 +72,7 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 			return
 		}
 
-		s.store.TouchSession(r.Context(), token)
+		s.store.TouchSession(r.Context(), token, r.UserAgent())
 
 		ctx := context.WithValue(r.Context(), ctxKeyUser, user)
 		ctx = context.WithValue(ctx, ctxKeyToken, token)

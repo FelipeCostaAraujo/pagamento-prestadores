@@ -395,13 +395,26 @@ func (s *Store) UserForToken(ctx context.Context, token string) (domain.User, er
 	return user, nil
 }
 
-// TouchSession records that a token was used. Best-effort: it is only used to
-// tell live sessions from abandoned ones, so a failure must not fail the
-// request that triggered it.
-func (s *Store) TouchSession(ctx context.Context, token string) {
-	_, _ = s.pool.Exec(ctx,
-		`UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1`,
-		auth.HashToken(token))
+// TouchSession records that a token was used, refreshing the client hint at the
+// same time.
+//
+// Updating the agent here rather than only at login means the connected-devices
+// list self-heals: a session created by an older build, or from a device that
+// has since been upgraded, starts describing itself correctly after one
+// request instead of after a re-login.
+//
+// Best-effort: it only distinguishes live sessions from abandoned ones, so a
+// failure must not fail the request that triggered it.
+func (s *Store) TouchSession(ctx context.Context, token, userAgent string) {
+	if len(userAgent) > 200 {
+		userAgent = userAgent[:200]
+	}
+	_, _ = s.pool.Exec(ctx, `
+		UPDATE sessions
+		SET last_seen_at = now(),
+		    user_agent = COALESCE(NULLIF($2, ''), user_agent)
+		WHERE token_hash = $1`,
+		auth.HashToken(token), userAgent)
 }
 
 // DeleteSession logs one device out.
